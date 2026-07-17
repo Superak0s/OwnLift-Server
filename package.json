@@ -1,0 +1,47 @@
+{
+  "name": "ownlift-server",
+  "version": "1.0.0",
+  "description": "Node.js server for processing workout files and splitting exercises by day",
+  "main": "server.js",
+  "scripts": {
+    "build": "tsc && cp config/schema.sql dist/config/schema.sql",
+    "dev": "ts-node --files server.ts",
+    "start": "node dist/server.js",
+    "admin": "ts-node --files admin.ts"
+  },
+  "keywords": [
+    "workout",
+    "exercise",
+    "fitness",
+    "file-processor",
+    "express"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.3.2",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.1.0",
+    "mysql2": "^3.18.2",
+    "ws": "^8.19.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^3.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.25",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^1.4.13",
+    "@types/node": "^20.19.35",
+    "@types/ws": "^8.18.1",
+    "@types/xlsx": "^0.0.36",
+    "nodemon": "^3.1.14",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
