@@ -92,7 +92,7 @@ function parseSQLStatements(sql: string): string[] {
 // numbered SQL files runner.  Bump CURRENT_SCHEMA_VERSION and add a migration
 // step for every additive change.
 
-const CURRENT_SCHEMA_VERSION = 2
+const CURRENT_SCHEMA_VERSION = 1
 
 async function getSchemaVersion(connection: PoolConnection): Promise<number> {
   try {

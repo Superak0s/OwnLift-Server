@@ -36,33 +36,39 @@ Request pipeline (`server.ts`): `helmet` → `cors` (locked to `ALLOWED_ORIGINS`
 All routes are under `/api` and require a JWT `Authorization: Bearer <token>` unless noted.
 
 ### Auth — `/api/auth`
-| Method | Path | Purpose |
-| --- | --- | --- |
-| POST | `/signup` | Register (first-ever user auto-becomes admin); returns JWT |
-| POST | `/signin` | Login by username or email; returns JWT |
-| GET | `/me` | Current user |
-| PUT | `/profile` | Update name/email |
-| PUT | `/password` | Change password |
-| DELETE | `/account/data` | Wipe all user data (confirm `DELETE_ALL_DATA`); keeps account |
-| POST | `/ws-ticket` | Issue short-lived (30 s), single-use WebSocket handshake ticket |
-| POST | `/refresh` | Reissue a JWT (must still be valid) |
+
+| Method | Path            | Purpose                                                         |
+| ------ | --------------- | --------------------------------------------------------------- |
+| POST   | `/signup`       | Register (first-ever user auto-becomes admin); returns JWT      |
+| POST   | `/signin`       | Login by username or email; returns JWT                         |
+| GET    | `/me`           | Current user                                                    |
+| PUT    | `/profile`      | Update name/email                                               |
+| PUT    | `/password`     | Change password                                                 |
+| DELETE | `/account/data` | Wipe all user data (confirm `DELETE_ALL_DATA`); keeps account   |
+| POST   | `/ws-ticket`    | Issue short-lived (30 s), single-use WebSocket handshake ticket |
+| POST   | `/refresh`      | Reissue a JWT (must still be valid)                             |
 
 ### Sessions (workouts) — `/api/sessions`
+
 `GET /` (history) · `POST /start` · `POST /:id/set` (record set, pushes live WS update) · `PATCH /:id/sets/:setId` (edit set) · `POST /:id/end` · `GET /:id` · `POST /rename-exercise` · plus admin/bulk delete routes.
 
 ### Program — `/api/program`
+
 `GET /` · `POST /upload` (persist client-parsed program JSON, 2 MB cap) · `DELETE /` · `PATCH /exercise/{rename,add,sets}`. Program spreadsheets are parsed **client-side**; the server only validates and stores.
 
 ### Analytics / Health / Version
+
 `GET /api/analytics` (comprehensive workout analytics) · `GET /api/health` (stats) · `GET /api/version`.
 
 ### Tracking — `/api/tracking/*`
+
 - **`bodystats`** — weight log & stats, height/unit prefs, body-fat logging + US-Navy calculation.
 - **`macros`** — intake logging, daily/weekly/monthly summaries, goals.
 - **`supplements`** — CRUD, intake logging + streaks, geofenced location reminders.
 - **`photos`** — upload (multer memory, image only, 10 MB), list, fetch raw bytes, note, delete. Stored as LONGBLOB in the DB.
 
 ### Social — `/api/friends` & `/api/sharing`
+
 - **Friends:** search, list, pending/sent requests, request/accept/reject/remove, privacy-preserving contact matching (SHA-256 hashed emails).
 - **Sharing permissions:** grant/revoke access by type — `history`, `analytics`, `program`, `joint_session`, `watch_session`.
 - **Joint sessions:** invite, accept/decline, live progress push, leave — two friends working out in sync.
@@ -103,7 +109,7 @@ SQL tables (`config/schema.sql`):
 - **sharing_permissions** — per-friend access grants.
 - **joint_sessions** / **joint_session_participants** / **joint_session_invites** — synchronized co-workouts.
 
-The schema is applied once on a fresh DB and tracked via a `_schema_version` table (current version `2`); further changes need real migrations.
+The schema is applied once on a fresh DB and tracked via a `_schema_version` table (current version `1`); further changes need real migrations.
 
 ---
 
@@ -111,18 +117,18 @@ The schema is applied once on a fresh DB and tracked via a `_schema_version` tab
 
 Set these environment variables (a `.env` file is supported via `dotenv`):
 
-| Variable | Required | Default | Notes |
-| --- | --- | --- | --- |
-| `PORT` | no | `5000` | HTTP/WS port |
-| `DB_HOST` | no | `localhost` | MySQL host |
-| `DB_PORT` | no | `3306` | MySQL port |
-| `DB_USER` | **yes** | — | MySQL user |
-| `DB_PASSWORD` | **yes** | — | MySQL password |
-| `DB_NAME` | **yes** | — | Database name (auto-created if missing) |
-| `JWT_SECRET` | **yes** | — | Must be ≥ 32 characters |
-| `JWT_EXPIRES_IN` | no | `7d` | Token lifetime |
-| `ALLOWED_ORIGINS` | **yes** | — | Comma-separated CORS origins |
-| `NODE_ENV` | no | — | `production` masks error details; `development` shows stack traces |
+| Variable          | Required | Default     | Notes                                                              |
+| ----------------- | -------- | ----------- | ------------------------------------------------------------------ |
+| `PORT`            | no       | `5000`      | HTTP/WS port                                                       |
+| `DB_HOST`         | no       | `localhost` | MySQL host                                                         |
+| `DB_PORT`         | no       | `3306`      | MySQL port                                                         |
+| `DB_USER`         | **yes**  | —           | MySQL user                                                         |
+| `DB_PASSWORD`     | **yes**  | —           | MySQL password                                                     |
+| `DB_NAME`         | **yes**  | —           | Database name (auto-created if missing)                            |
+| `JWT_SECRET`      | **yes**  | —           | Must be ≥ 32 characters                                            |
+| `JWT_EXPIRES_IN`  | no       | `7d`        | Token lifetime                                                     |
+| `ALLOWED_ORIGINS` | **yes**  | —           | Comma-separated CORS origins                                       |
+| `NODE_ENV`        | no       | —           | `production` masks error details; `development` shows stack traces |
 
 > ⚠️ **Security:** do not commit real secrets. Rotate any credentials that have been checked into `.env`, and keep `.env` out of version control.
 
@@ -131,25 +137,30 @@ Set these environment variables (a `.env` file is supported via `dotenv`):
 ## Running
 
 ### Development
+
 ```bash
 pnpm install
 pnpm dev          # ts-node, hot iteration
 ```
 
 ### Production build
+
 ```bash
 pnpm build        # tsc + copies config/schema.sql into dist/
 pnpm start        # node dist/server.js
 ```
 
 ### Docker (recommended for self-hosting)
+
 ```bash
 docker build -t ownlift-server .
 docker run -p 5000:5000 --env-file .env ownlift-server
 ```
+
 The image is a two-stage build (`node:24-alpine`, pnpm), runs `node dist/server.js`, and exposes port 5000. Point your MySQL env vars at a reachable database — the DB and schema auto-provision on first boot.
 
 ### Releasing
+
 `release.sh` / `release.bat` bump the version, commit & push to `origin main`, then build and push `superak0s/ownlift-server:latest` and `:<version>` to Docker Hub.
 
 ---

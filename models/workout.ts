@@ -20,7 +20,9 @@ interface SessionRow extends RowDataPacket {
   user_id: number
   day_number: number
   day_title: string
-  muscle_groups: string
+  // JSON column — mysql2 auto-parses this to string[] for most rows, but
+  // some legacy rows hold a plain comma-joined string. See parseMuscleGroups.
+  muscle_groups: string | string[]
   start_time: Date | string
   end_time: Date | string | null
   total_duration: number | null
@@ -70,6 +72,38 @@ function stripDates<T extends Record<string, unknown>>(row: T): T {
     }
   }
   return out
+}
+
+/**
+ * Parse the `sessions.muscle_groups` column into a string[].
+ *
+ * `muscle_groups` is a MySQL JSON column, and mysql2 auto-parses JSON-typed
+ * columns for you — so most rows arrive here as an actual array already,
+ * not a string. Some older rows apparently hold a plain comma-joined string
+ * instead (e.g. "Glutes,Hamstrings"), predating whatever migration/version
+ * put this column on JSON.stringify'd data.
+ *
+ * This handles all three shapes that can show up: an array (the common
+ * case — already parsed by the driver), a JSON-encoded string (in case a
+ * connection/config ever returns JSON columns as raw text instead), or a
+ * legacy comma-joined string. Anything else (null, empty, unexpected type)
+ * becomes [].
+ */
+function parseMuscleGroups(raw: unknown): string[] {
+  if (raw == null) return []
+  if (Array.isArray(raw)) {
+    return raw.filter((g): g is string => typeof g === "string")
+  }
+  if (typeof raw !== "string" || !raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return raw
+      .split(",")
+      .map((g) => g.trim())
+      .filter(Boolean)
+  }
 }
 
 // ─── Queries ──────────────────────────────────────────────────────────────────
@@ -335,7 +369,7 @@ export async function getSessionDetails(
   )
   return {
     ...stripDates(sessions[0] as unknown as Record<string, unknown>),
-    muscle_groups: JSON.parse(sessions[0].muscle_groups || "[]"),
+    muscle_groups: parseMuscleGroups(sessions[0].muscle_groups),
     set_timings: timings.map((t) =>
       stripDates(t as unknown as Record<string, unknown>),
     ),
@@ -372,7 +406,7 @@ export async function getSessionHistory(
     ...(stripDates(
       r as unknown as Record<string, unknown>,
     ) as unknown as Session),
-    muscle_groups: JSON.parse(r.muscle_groups || "[]"),
+    muscle_groups: parseMuscleGroups(r.muscle_groups),
     set_timings: [],
   }))
 
