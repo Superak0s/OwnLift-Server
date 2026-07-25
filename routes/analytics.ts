@@ -1,8 +1,8 @@
 // routes/analytics.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../middleware/auth"
-import { asyncHandler, ValidationError } from "../middleware/errorHandler"
-import { getComprehensiveAnalytics } from "../services/analyticsService"
+import { authenticateToken } from "../middleware/auth.js"
+import { asyncHandler, ValidationError } from "../middleware/errorHandler.js"
+import { getComprehensiveAnalytics } from "../services/analyticsService.js"
 
 const router: Router = Router()
 

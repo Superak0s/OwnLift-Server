@@ -11,7 +11,7 @@
 import dotenv from "dotenv"
 dotenv.config()
 
-import { findUserByUsername, setUserAdmin, listAdmins } from "./models/auth"
+import { findUserByUsername, setUserAdmin, listAdmins } from "./models/auth.js"
 
 async function main() {
   const args = process.argv.slice(2)

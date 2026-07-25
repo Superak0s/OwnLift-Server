@@ -1,10 +1,10 @@
 // routes/tracking/menstrual.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth"
+import { authenticateToken } from "../../middleware/auth.js"
 import {
   asyncHandler,
   ValidationError,
-} from "../../middleware/errorHandler"
+} from "../../middleware/errorHandler.js"
 import {
   logMenstrualCycle,
   endMenstrualCycle,
@@ -15,12 +15,12 @@ import {
   getMenstrualSettings,
   setMenstrualSettings,
   type FlowIntensity,
-} from "../../models/tracking/menstrual"
+} from "../../models/tracking/menstrual.js"
 import {
   setDayFlow,
   getDayFlowForDate,
   deleteDayFlowForDate,
-} from "../../models/tracking/menstrualDayFlow"
+} from "../../models/tracking/menstrualDayFlow.js"
 
 const router: Router = Router()
 

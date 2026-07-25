@@ -1,13 +1,13 @@
 // routes/social/friends.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth"
+import { authenticateToken } from "../../middleware/auth.js"
 import {
   asyncHandler,
   NotFoundError,
   ValidationError,
   ConflictError,
   ForbiddenError,
-} from "../../middleware/errorHandler"
+} from "../../middleware/errorHandler.js"
 import {
   sendFriendRequest,
   acceptFriendRequest,
@@ -18,8 +18,8 @@ import {
   getSentRequests,
   searchUsers,
   findFriendSuggestionsByEmailHashes,
-} from "../../models/social/friends"
-import { findUserById, findUserByUsername } from "../../models/auth"
+} from "../../models/social/friends.js"
+import { findUserById, findUserByUsername } from "../../models/auth.js"
 
 const router: Router = Router()
 

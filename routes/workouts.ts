@@ -1,19 +1,19 @@
 // routes/workouts.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../middleware/auth"
+import { authenticateToken } from "../middleware/auth.js"
 import {
   asyncHandler,
   ForbiddenError,
   ValidationError,
-} from "../middleware/errorHandler"
+} from "../middleware/errorHandler.js"
 import {
   validateSessionCreation,
   validateSetTiming,
   validateSetTimingUpdate,
   validateRequired,
-} from "../middleware/validation"
-import { pool } from "../config/database"
-import { notifyWatcher, pushSessionStatus } from "../ws/wsServer"
+} from "../middleware/validation.js"
+import { pool } from "../config/database.js"
+import { notifyWatcher, pushSessionStatus } from "../ws/wsServer.js"
 import {
   createSession,
   recordSetTiming,
@@ -25,8 +25,8 @@ import {
   clearAdminSessions,
   deleteAllSessionsForPerson,
   updateSessionPerson,
-} from "../models/workout"
-import { getFriendSessionDetails } from "../models/social/sharing"
+} from "../models/workout.js"
+import { getFriendSessionDetails } from "../models/social/sharing.js"
 
 const router: Router = Router()
 

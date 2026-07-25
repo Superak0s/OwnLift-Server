@@ -1,11 +1,11 @@
 // src/models/reminders.ts
 // User reminders for various health tracking activities
 
-import { pool } from "../config/database"
-import { query as dbQuery } from "../config/database"
+import { pool } from "../config/database.js"
+import { query as dbQuery } from "../config/database.js"
 import type { RowDataPacket } from "mysql2"
-import type { InsertResult } from "../types"
-import { ValidationError } from "../middleware/errorHandler"
+import type { InsertResult } from "../types/index.js"
+import { ValidationError } from "../middleware/errorHandler.js"
 
 export type ReminderType = "weigh_in" | "hydration" | "sleep" | "measurements" | "menstrual"
 export type ReminderFrequency = "daily" | "weekly" | "custom"

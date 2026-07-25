@@ -11,8 +11,8 @@ import {
   getPersonalRecords as modelPersonalRecords,
   getWeeklySummary as modelWeeklySummary,
   compareTimePeriods,
-} from "../models/analytics"
-import { getSessionStats } from "../models/workout"
+} from "../models/analytics.js"
+import { getSessionStats } from "../models/workout.js"
 
 const DAY_NAMES = [
   "Sunday",

@@ -1,13 +1,13 @@
 // src/models/tracking/macros.ts
-import { pool } from "../../config/database"
+import { pool } from "../../config/database.js"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
-import type { InsertResult } from "../../types"
+import type { InsertResult } from "../../types/index.js"
 import type {
   MacrosEntry,
   MacrosStat,
   MacrosGoals,
   DailySummary,
-} from "../../types"
+} from "../../types/index.js"
 
 export type { MacrosEntry, MacrosStat, MacrosGoals, DailySummary }
 

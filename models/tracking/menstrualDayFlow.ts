@@ -1,8 +1,8 @@
-import { pool, query as dbQuery } from "../../config/database"
+import { pool, query as dbQuery } from "../../config/database.js"
 import type { RowDataPacket } from "mysql2"
-import { formatDateForMySQL } from "../utils/dateHelpers"
-import type { InsertResult } from "../../types"
-import { ValidationError } from "../../middleware/errorHandler"
+import { formatDateForMySQL } from "../utils/dateHelpers.js"
+import type { InsertResult } from "../../types/index.js"
+import { ValidationError } from "../../middleware/errorHandler.js"
 
 export type FlowIntensity = "light" | "moderate" | "heavy"
 

@@ -6,12 +6,12 @@
  * callers keep a single import entry point.
  */
 
-export * from "./db"
-export * from "./auth"
-export * from "./user"
-export * from "./program"
-export * from "./workout"
-export * from "./analytics"
-export * from "./tracking"
-export * from "./social"
-export * from "./supplements"
+export * from "./db.js"
+export * from "./auth.js"
+export * from "./user.js"
+export * from "./program.js"
+export * from "./workout.js"
+export * from "./analytics.js"
+export * from "./tracking.js"
+export * from "./social.js"
+export * from "./supplements.js"

@@ -1,11 +1,11 @@
 // src/routes/tracking/supplements.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth"
+import { authenticateToken } from "../../middleware/auth.js"
 import {
   asyncHandler,
   ValidationError,
   NotFoundError,
-} from "../../middleware/errorHandler"
+} from "../../middleware/errorHandler.js"
 import {
   createSupplement,
   getSupplementById,
@@ -23,7 +23,7 @@ import {
   toggleLocation,
   checkIfAtLocation,
   deleteLocation,
-} from "../../models/tracking/supplements"
+} from "../../models/tracking/supplements.js"
 
 const router: Router = Router()
 router.use(authenticateToken)

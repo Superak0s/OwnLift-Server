@@ -1,6 +1,6 @@
 // src/middleware/validation.ts
 import { Request, Response, NextFunction } from "express"
-import { ValidationError } from "./errorHandler"
+import { ValidationError } from "./errorHandler.js"
 
 // ─── Field length limits ──────────────────────────────────────────────────────
 // Prevents oversized strings from passing body-size checks and being stored.

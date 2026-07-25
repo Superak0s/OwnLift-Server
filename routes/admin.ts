@@ -1,8 +1,8 @@
 // routes/admin.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../middleware/auth"
-import { asyncHandler } from "../middleware/errorHandler"
-import { clearAdminSessions } from "../models/workout"
+import { authenticateToken } from "../middleware/auth.js"
+import { asyncHandler } from "../middleware/errorHandler.js"
+import { clearAdminSessions } from "../models/workout.js"
 
 const router: Router = Router()
 

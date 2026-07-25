@@ -1,17 +1,17 @@
 // routes/tracking/sleep.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth"
+import { authenticateToken } from "../../middleware/auth.js"
 import {
   asyncHandler,
   ValidationError,
-} from "../../middleware/errorHandler"
+} from "../../middleware/errorHandler.js"
 import {
   logSleep,
   getSleepHistory,
   getSleepStats,
   deleteSleepEntry,
   type SleepQuality,
-} from "../../models/tracking/sleep"
+} from "../../models/tracking/sleep.js"
 
 const router: Router = Router()
 

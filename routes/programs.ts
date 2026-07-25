@@ -1,11 +1,11 @@
 // routes/programs.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../middleware/auth"
+import { authenticateToken } from "../middleware/auth.js"
 import {
   asyncHandler,
   NotFoundError,
   ValidationError,
-} from "../middleware/errorHandler"
+} from "../middleware/errorHandler.js"
 import {
   getProgramByUserId,
   upsertProgram,
@@ -13,7 +13,7 @@ import {
   renameExercise,
   addExercise,
   patchExerciseSets,
-} from "../models/workout/program"
+} from "../models/workout/program.js"
 
 const router: Router = Router()
 

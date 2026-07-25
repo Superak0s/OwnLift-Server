@@ -1,7 +1,7 @@
 // routes/tracking/measurements.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth"
-import { asyncHandler, ValidationError } from "../../middleware/errorHandler"
+import { authenticateToken } from "../../middleware/auth.js"
+import { asyncHandler, ValidationError } from "../../middleware/errorHandler.js"
 import {
   createMeasurementType,
   getMeasurementTypes,
@@ -9,7 +9,7 @@ import {
   logCustomMeasurement,
   getCustomMeasurementsForDate,
   getMeasurementValues,
-} from "../../models/tracking/customMeasurements"
+} from "../../models/tracking/customMeasurements.js"
 
 const router: Router = Router()
 router.use(authenticateToken)

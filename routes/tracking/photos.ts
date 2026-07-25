@@ -1,8 +1,8 @@
 // routes/tracking/photos.ts
 import { Router, Request, Response } from "express"
 import multer from "multer"
-import { authenticateToken } from "../../middleware/auth"
-import { asyncHandler, ValidationError } from "../../middleware/errorHandler"
+import { authenticateToken } from "../../middleware/auth.js"
+import { asyncHandler, ValidationError } from "../../middleware/errorHandler.js"
 import {
   saveProgressPhoto,
   getPhotoList,
@@ -14,7 +14,7 @@ import {
   getPhotosByMuscleWithNotes,
   comparePhotos,
   getPhotosByDateRange,
-} from "../../models/tracking/photos"
+} from "../../models/tracking/photos.js"
 
 const router: Router = Router()
 

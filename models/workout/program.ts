@@ -4,11 +4,11 @@
 // redundant getProgramByUserId alias have been removed. All mutations go
 // through loadProgram / saveProgram / requireDay / requirePersonWorkout.
 
-import { pool } from "../../config/database"
-import { query as dbQuery } from "../../config/database"
+import { pool } from "../../config/database.js"
+import { query as dbQuery } from "../../config/database.js"
 import type { RowDataPacket } from "mysql2"
-import type { InsertResult } from "../../types"
-import { NotFoundError, ValidationError } from "../../middleware/errorHandler"
+import type { InsertResult } from "../../types/index.js"
+import { NotFoundError, ValidationError } from "../../middleware/errorHandler.js"
 import type {
   Exercise,
   PersonWorkout,
@@ -17,7 +17,7 @@ import type {
   StoredProgram,
   PersonDayWorkout,
   PersonPlan,
-} from "../../types"
+} from "../../types/index.js"
 
 export type {
   Exercise,

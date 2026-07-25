@@ -3,8 +3,8 @@ import bcrypt from "bcryptjs"
 import jwt from "jsonwebtoken"
 import type { SignOptions } from "jsonwebtoken"
 import type { RowDataPacket } from "mysql2"
-import type { InsertResult, AuthUser } from "../types"
-import { pool } from "../config/database"
+import type { InsertResult, AuthUser } from "../types/index.js"
+import { pool } from "../config/database.js"
 
 // ─── DB row shapes ────────────────────────────────────────────────────────────
 

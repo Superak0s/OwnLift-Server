@@ -2,18 +2,18 @@
 // Body composition: weight tracking, body fat calculations & history.
 // Height and weight-unit helpers are owned by user.ts and re-exported here.
 
-import { pool } from "../../config/database"
-import { query as dbQuery } from "../../config/database"
+import { pool } from "../../config/database.js"
+import { query as dbQuery } from "../../config/database.js"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
-import type { InsertResult } from "../../types"
-import { formatDateForMySQL } from "../utils/dateHelpers"
+import type { InsertResult } from "../../types/index.js"
+import { formatDateForMySQL } from "../utils/dateHelpers.js"
 import type {
   WeightEntry,
   WeightStats,
   BodyFatEntry,
   BodyFatTrend,
   BodyFatTrendDirection,
-} from "../../types"
+} from "../../types/index.js"
 
 export type { WeightEntry, WeightStats, BodyFatEntry, BodyFatTrend }
 
@@ -23,7 +23,7 @@ export {
   getUserHeight as getHeight,
   setWeightUnit,
   getWeightUnit,
-} from "../user"
+} from "../user.js"
 
 // ─── DB row shapes ────────────────────────────────────────────────────────────
 

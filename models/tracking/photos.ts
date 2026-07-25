@@ -1,11 +1,11 @@
 // src/models/tracking/photos.ts
-import { pool } from "../../config/database"
-import { query as dbQuery } from "../../config/database"
+import { pool } from "../../config/database.js"
+import { query as dbQuery } from "../../config/database.js"
 import type { RowDataPacket } from "mysql2"
-import type { InsertResult } from "../../types"
-import { formatDateForMySQL } from "../utils/dateHelpers"
-import { NotFoundError, ValidationError } from "../../middleware/errorHandler"
-import type { PhotoMetadata, PhotoData } from "../../types"
+import type { InsertResult } from "../../types/index.js"
+import { formatDateForMySQL } from "../utils/dateHelpers.js"
+import { NotFoundError, ValidationError } from "../../middleware/errorHandler.js"
+import type { PhotoMetadata, PhotoData } from "../../types/index.js"
 
 export type { PhotoMetadata, PhotoData }
 

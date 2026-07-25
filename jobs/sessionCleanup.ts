@@ -11,7 +11,7 @@
 // of whether any client is connected, and closes anything that's gone
 // quiet for too long.
 
-import { findStaleOpenSessions, autoEndStaleSession } from "../models/workout"
+import { findStaleOpenSessions, autoEndStaleSession } from "../models/workout.js"
 
 // Keep this in sync with INACTIVITY_THRESHOLD_MS on the client
 // (utils/session.ts) — both should represent the same 30-minute idea.

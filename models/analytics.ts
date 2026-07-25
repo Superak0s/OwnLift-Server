@@ -1,6 +1,6 @@
 // src/models/analytics.ts
 import type { RowDataPacket } from "mysql2"
-import { query as dbQuery } from "../config/database"
+import { query as dbQuery } from "../config/database.js"
 import type {
   AnalyticsSummary,
   ExerciseAnalytics,
@@ -9,7 +9,7 @@ import type {
   WeeklySummaryDay,
   PeriodComparison,
   PeriodStats,
-} from "../types"
+} from "../types/index.js"
 
 export type {
   AnalyticsSummary,

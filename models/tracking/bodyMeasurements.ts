@@ -1,12 +1,12 @@
 // src/models/tracking/bodyMeasurements.ts
 // Track body circumference measurements: waist, arms, chest
 
-import { pool } from "../../config/database"
-import { query as dbQuery } from "../../config/database"
+import { pool } from "../../config/database.js"
+import { query as dbQuery } from "../../config/database.js"
 import type { RowDataPacket } from "mysql2"
-import type { InsertResult } from "../../types"
-import { formatDateForMySQL } from "../utils/dateHelpers"
-import { NotFoundError, ValidationError } from "../../middleware/errorHandler"
+import type { InsertResult } from "../../types/index.js"
+import { formatDateForMySQL } from "../utils/dateHelpers.js"
+import { NotFoundError, ValidationError } from "../../middleware/errorHandler.js"
 
 export interface MeasurementEntry {
   id: number

@@ -1,9 +1,9 @@
 // routes/health.ts
 import { Router, Request, Response } from "express"
-import { pool } from "../config/database"
-import { authenticateToken } from "../middleware/auth"
-import { asyncHandler } from "../middleware/errorHandler"
-import { getAnalytics } from "../models/analytics"
+import { pool } from "../config/database.js"
+import { authenticateToken } from "../middleware/auth.js"
+import { asyncHandler } from "../middleware/errorHandler.js"
+import { getAnalytics } from "../models/analytics.js"
 
 const router: Router = Router()
 

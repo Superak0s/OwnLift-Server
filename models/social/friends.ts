@@ -1,19 +1,19 @@
 // src/models/social/friends.ts
-import { pool } from "../../config/database"
+import { pool } from "../../config/database.js"
 import crypto from "crypto"
 import type { RowDataPacket } from "mysql2"
-import type { InsertResult } from "../../types"
+import type { InsertResult } from "../../types/index.js"
 import {
   NotFoundError,
   ConflictError,
   ValidationError,
-} from "../../middleware/errorHandler"
+} from "../../middleware/errorHandler.js"
 import type {
   Friend,
   FriendRequest,
   UserSearchResult,
   FriendshipStatus,
-} from "../../types"
+} from "../../types/index.js"
 
 export type { Friend, FriendRequest, UserSearchResult }
 

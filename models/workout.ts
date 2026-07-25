@@ -1,15 +1,15 @@
 // src/models/workout.ts
-import { pool } from "../config/database"
-import { query as dbQuery } from "../config/database"
+import { pool } from "../config/database.js"
+import { query as dbQuery } from "../config/database.js"
 import type { RowDataPacket } from "mysql2"
-import { formatDateForMySQL } from "./utils/dateHelpers"
-import { NotFoundError, ForbiddenError } from "../middleware/errorHandler"
+import { formatDateForMySQL } from "./utils/dateHelpers.js"
+import { NotFoundError, ForbiddenError } from "../middleware/errorHandler.js"
 import type {
   SetTiming,
   Session,
   RecordSetResult,
   InsertResult,
-} from "../types"
+} from "../types/index.js"
 
 export type { SetTiming, Session, RecordSetResult }
 

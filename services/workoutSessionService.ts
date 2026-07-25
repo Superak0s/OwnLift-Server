@@ -1,18 +1,18 @@
 // src/services/workoutSessionService.ts
-import { pool } from "../config/database"
-import { ValidationError } from "../middleware/errorHandler"
+import { pool } from "../config/database.js"
+import { ValidationError } from "../middleware/errorHandler.js"
 import {
   createSession,
   recordSetTiming,
   endSession,
   getSessionDetails,
   updateSessionPerson,
-} from "../models/workout"
+} from "../models/workout.js"
 import type {
   SessionSummary,
   SessionProgress,
   ProgressionResult,
-} from "../types"
+} from "../types/index.js"
 
 export type { SessionSummary, SessionProgress, ProgressionResult }
 

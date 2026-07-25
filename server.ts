@@ -6,8 +6,8 @@ import helmet from "helmet"
 import rateLimit from "express-rate-limit"
 import dotenv from "dotenv"
 import { randomUUID } from "crypto"
-import { version } from "./package.json"
-import { startStaleSessionCleanup } from "./jobs/sessionCleanup"
+import { version } from "./package.json" with { type: "json" }
+import { startStaleSessionCleanup } from "./jobs/sessionCleanup.js"
 
 dotenv.config()
 
@@ -22,10 +22,10 @@ if (!process.env.ALLOWED_ORIGINS)
     "ALLOWED_ORIGINS env var is not set — set it to a comma-separated list of allowed origins (e.g. https://yourapp.com)",
   )
 
-import { testDatabaseConnection } from "./config/database"
-import { createWsServer } from "./ws/wsServer"
-import { registerRoutes } from "./routes"
-import { errorHandler } from "./middleware/errorHandler"
+import { testDatabaseConnection } from "./config/database.js"
+import { createWsServer } from "./ws/wsServer.js"
+import { registerRoutes } from "./routes/index.js"
+import { errorHandler } from "./middleware/errorHandler.js"
 
 // ─── Extend Express Request with reqId ───────────────────────────────────────
 // Declared here rather than in express.d.ts to keep it co-located with the

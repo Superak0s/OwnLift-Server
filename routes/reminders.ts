@@ -1,10 +1,10 @@
 // routes/reminders.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../middleware/auth"
+import { authenticateToken } from "../middleware/auth.js"
 import {
   asyncHandler,
   ValidationError,
-} from "../middleware/errorHandler"
+} from "../middleware/errorHandler.js"
 import {
   createOrUpdateReminder,
   getReminder,
@@ -13,7 +13,7 @@ import {
   toggleReminder,
   deleteReminder,
   type ReminderType,
-} from "../models/reminders"
+} from "../models/reminders.js"
 
 const router: Router = Router()
 

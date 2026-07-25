@@ -1,9 +1,9 @@
 // src/middleware/auth.ts
 import { Request, Response, NextFunction } from "express"
 import jwt from "jsonwebtoken"
-import { findUserById } from "../models/auth"
-import { UnauthorizedError } from "./errorHandler"
-import type { JwtPayload } from "../types"
+import { findUserById } from "../models/auth.js"
+import { UnauthorizedError } from "./errorHandler.js"
+import type { JwtPayload } from "../types/index.js"
 
 function extractToken(req: Request): string | null {
   const header = req.headers["authorization"]

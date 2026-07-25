@@ -1,20 +1,20 @@
 // src/models/tracking/supplements.ts
-import { pool } from "../../config/database"
-import { query as dbQuery } from "../../config/database"
+import { pool } from "../../config/database.js"
+import { query as dbQuery } from "../../config/database.js"
 import type { RowDataPacket } from "mysql2"
-import type { InsertResult } from "../../types"
+import type { InsertResult } from "../../types/index.js"
 import {
   formatDateForMySQL,
   simpleTimeToMySQL,
   mysqlTimeToSimple,
-} from "../utils/dateHelpers"
+} from "../utils/dateHelpers.js"
 import type {
   Supplement,
   SupplementSummary,
   SupplementEntry,
   SupplementLocation,
   AtLocationResult,
-} from "../../types/index"
+} from "../../types/index.js"
 
 export type {
   Supplement,

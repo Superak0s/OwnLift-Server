@@ -1,18 +1,18 @@
 // routes/social/sharing.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth"
+import { authenticateToken } from "../../middleware/auth.js"
 import {
   asyncHandler,
   ValidationError,
   NotFoundError,
   ForbiddenError,
-} from "../../middleware/errorHandler"
-import { query as dbQuery } from "../../config/database"
+} from "../../middleware/errorHandler.js"
+import { query as dbQuery } from "../../config/database.js"
 import {
   notifyJointInvite,
   notifyInviteStatus,
   notifyJointProgress,
-} from "../../ws/wsServer"
+} from "../../ws/wsServer.js"
 import {
   grantPermission,
   revokePermission,
@@ -32,8 +32,8 @@ import {
   updateParticipantProgress,
   endJointSession,
   getUserActiveSessionStatus,
-} from "../../models/social/sharing"
-import { areFriends } from "../../models/social/friends"
+} from "../../models/social/sharing.js"
+import { areFriends } from "../../models/social/friends.js"
 
 const router: Router = Router()
 

@@ -1,11 +1,11 @@
 // routes/tracking/macros.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth"
+import { authenticateToken } from "../../middleware/auth.js"
 import {
   asyncHandler,
   ValidationError,
   NotFoundError,
-} from "../../middleware/errorHandler"
+} from "../../middleware/errorHandler.js"
 import {
   logMacrosIntake,
   getMacrosHistory,
@@ -15,7 +15,7 @@ import {
   deleteMacrosEntry,
   getWeeklySummary,
   getMonthlySummary,
-} from "../../models/tracking/macros"
+} from "../../models/tracking/macros.js"
 
 const router: Router = Router()
 

@@ -1,12 +1,12 @@
 // routes/tracking/bodyStats.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth"
+import { authenticateToken } from "../../middleware/auth.js"
 import {
   asyncHandler,
   ValidationError,
   NotFoundError,
-} from "../../middleware/errorHandler"
-import { validateWeightEntry } from "../../middleware/validation"
+} from "../../middleware/errorHandler.js"
+import { validateWeightEntry } from "../../middleware/validation.js"
 import {
   logWeight,
   getWeightHistory,
@@ -24,7 +24,7 @@ import {
   deleteBodyFatEntry,
   getBodyFatTrend,
   getUserBodyData,
-} from "../../models/tracking/bodyStats"
+} from "../../models/tracking/bodyStats.js"
 
 const router: Router = Router()
 

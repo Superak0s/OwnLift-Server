@@ -1,18 +1,23 @@
 // src/config/database.ts
-import mysql, { Pool, PoolConnection } from "mysql2/promise"
-import fs from "fs"
-import path from "path"
-import dotenv from "dotenv"
-import type { QueryResult, FieldPacket } from "mysql2/promise"
+import mysql, { Pool, PoolConnection } from "mysql2/promise";
+import fs from "fs";
+import path from "path";
+import dotenv from "dotenv";
+import type { QueryResult, FieldPacket } from "mysql2/promise";
+import { fileURLToPath } from "url";
+import { dirname } from "path";
 
-dotenv.config()
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+dotenv.config();
 
 // ─── Fail fast if critical env vars are missing ───────────────────────────────
 function requireEnv(name: string): string {
-  const value = process.env[name]
+  const value = process.env[name];
   if (!value)
-    throw new Error(`Required environment variable "${name}" is not set`)
-  return value
+    throw new Error(`Required environment variable "${name}" is not set`);
+  return value;
 }
 
 // ─── Pool config ──────────────────────────────────────────────────────────────
@@ -29,18 +34,18 @@ function getPoolConfig() {
     connectionLimit: 10,
     queueLimit: 0,
     dateStrings: true,
-  }
+  };
 }
 
-export const pool: Pool = mysql.createPool(getPoolConfig())
+export const pool: Pool = mysql.createPool(getPoolConfig());
 
 // Safe subset of connection info — no passwords, no credentials.
 // Use this wherever you need to log or surface DB info to callers.
 export interface DatabaseInfo {
-  host: string
-  port: number | string
-  database: string
-  user: string
+  host: string;
+  port: number | string;
+  database: string;
+  user: string;
 }
 
 /** Typed wrapper — avoids casting `params` to `any` at every call-site. */
@@ -48,27 +53,27 @@ export function query<T extends QueryResult>(
   sql: string,
   params?: unknown[],
 ): Promise<[T, FieldPacket[]]> {
-  return pool.execute<T>(sql, params as any)
+  return pool.execute<T>(sql, params as any);
 }
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 async function createDatabaseIfNotExists(): Promise<void> {
-  const dbName = requireEnv("DB_NAME")
+  const dbName = requireEnv("DB_NAME");
   // Temporary connection for CREATE DATABASE — never log this config object.
   const connection = await mysql.createConnection({
     host: process.env.DB_HOST || "localhost",
     user: requireEnv("DB_USER"),
     password: requireEnv("DB_PASSWORD"),
     port: Number(process.env.DB_PORT) || 3306,
-  })
+  });
   try {
     await connection.execute(
       `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-    )
-    console.log(`✓ Database '${dbName}' verified/created`)
+    );
+    console.log(`✓ Database '${dbName}' verified/created`);
   } finally {
-    await connection.end()
+    await connection.end();
   }
 }
 
@@ -78,7 +83,7 @@ function parseSQLStatements(sql: string): string[] {
     .replace(/--[^\n]*/g, "")
     .split(";")
     .map((s) => s.trim())
-    .filter(Boolean)
+    .filter(Boolean);
 }
 
 // ─── Schema migration guard ───────────────────────────────────────────────────
@@ -92,7 +97,7 @@ function parseSQLStatements(sql: string): string[] {
 // numbered SQL files runner.  Bump CURRENT_SCHEMA_VERSION and add a migration
 // step for every additive change.
 
-const CURRENT_SCHEMA_VERSION = 1
+const CURRENT_SCHEMA_VERSION = 1;
 
 async function getSchemaVersion(connection: PoolConnection): Promise<number> {
   try {
@@ -101,13 +106,13 @@ async function getSchemaVersion(connection: PoolConnection): Promise<number> {
          version INT NOT NULL DEFAULT 0,
          applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
        ) ENGINE=InnoDB`,
-    )
+    );
     const [rows] = await connection.execute<any[]>(
       "SELECT version FROM _schema_version ORDER BY applied_at DESC LIMIT 1",
-    )
-    return rows[0]?.version ?? 0
+    );
+    return rows[0]?.version ?? 0;
   } catch {
-    return 0
+    return 0;
   }
 }
 
@@ -117,44 +122,46 @@ async function setSchemaVersion(
 ): Promise<void> {
   await connection.execute("INSERT INTO _schema_version (version) VALUES (?)", [
     version,
-  ])
+  ]);
 }
 
 export async function initializeTables(): Promise<void> {
-  const schemaPath = path.join(__dirname, "schema.sql")
+  const schemaPath = path.join(__dirname, "schema.sql");
   if (!fs.existsSync(schemaPath)) {
-    throw new Error(`schema.sql not found at ${schemaPath}.`)
+    throw new Error(`schema.sql not found at ${schemaPath}.`);
   }
 
-  const connection: PoolConnection = await pool.getConnection()
+  const connection: PoolConnection = await pool.getConnection();
   try {
-    const currentVersion = await getSchemaVersion(connection)
+    const currentVersion = await getSchemaVersion(connection);
 
     if (currentVersion >= CURRENT_SCHEMA_VERSION) {
-      console.log(`✓ Schema is up to date (version ${currentVersion})`)
-      return
+      console.log(`✓ Schema is up to date (version ${currentVersion})`);
+      return;
     }
 
     // If DB is brand-new, apply schema.sql normally.
     if (currentVersion === 0) {
       console.log(
         `🔧 Running schema.sql (upgrading from v${currentVersion} → v${CURRENT_SCHEMA_VERSION})…`,
-      )
-      const statements = parseSQLStatements(fs.readFileSync(schemaPath, "utf8"))
+      );
+      const statements = parseSQLStatements(
+        fs.readFileSync(schemaPath, "utf8"),
+      );
       for (const stmt of statements) {
-        if (/^(USE\s|CREATE\s+DATABASE)/i.test(stmt)) continue
-        await connection.execute(stmt)
+        if (/^(USE\s|CREATE\s+DATABASE)/i.test(stmt)) continue;
+        await connection.execute(stmt);
       }
-      await setSchemaVersion(connection, CURRENT_SCHEMA_VERSION)
-      console.log("✓ All database tables initialized successfully")
-      return
+      await setSchemaVersion(connection, CURRENT_SCHEMA_VERSION);
+      console.log("✓ All database tables initialized successfully");
+      return;
     }
 
     console.log(
       `✓ Database schema upgraded to version ${CURRENT_SCHEMA_VERSION}`,
-    )
+    );
   } finally {
-    connection.release()
+    connection.release();
   }
 }
 
@@ -175,7 +182,7 @@ async function ensureAdditionalTrackingTables(): Promise<void> {
       KEY idx_ms_user_date (user_id, logged_at),
       CONSTRAINT fk_ms_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `)
+  `);
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS menstrual_cycle (
@@ -192,25 +199,28 @@ async function ensureAdditionalTrackingTables(): Promise<void> {
       KEY idx_mc_user_start (user_id, cycle_start),
       CONSTRAINT fk_mc_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `)
+  `);
 }
 
 export async function testDatabaseConnection(): Promise<void> {
   try {
-    await createDatabaseIfNotExists()
-    const connection = await pool.getConnection()
-    console.log("✓ Database connected successfully")
-    connection.release()
-    await initializeTables()
+    await createDatabaseIfNotExists();
+    const connection = await pool.getConnection();
+    console.log("✓ Database connected successfully");
+    connection.release();
+    await initializeTables();
     // Ensure any newer/additional tracking tables exist even if the DB was
     // already initialized with an older schema version.
-    await ensureAdditionalTrackingTables()
-    console.log("✓ Database is ready")
+    await ensureAdditionalTrackingTables();
+    console.log("✓ Database is ready");
   } catch (error) {
     // Log only the message — never the error object itself as it may contain
     // credentials from the pool config in certain mysql2 error shapes.
-    console.error("✗ Database initialization failed:", (error as Error).message)
-    process.exit(1)
+    console.error(
+      "✗ Database initialization failed:",
+      (error as Error).message,
+    );
+    process.exit(1);
   }
 }
 
@@ -220,5 +230,5 @@ export function getDatabaseInfo(): DatabaseInfo {
     port: process.env.DB_PORT || 3306,
     database: process.env.DB_NAME || "(unset)",
     user: process.env.DB_USER || "(unset)",
-  }
+  };
 }

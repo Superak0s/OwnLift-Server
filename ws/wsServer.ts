@@ -3,12 +3,12 @@ import { WebSocketServer, WebSocket, RawData } from "ws"
 import http from "http"
 import jwt from "jsonwebtoken"
 import { randomUUID } from "crypto"
-import { pool } from "../config/database"
+import { pool } from "../config/database.js"
 import {
   getJointSession,
   updateParticipantProgress,
-} from "../models/social/sharing"
-import type { JointSession, ParticipantProgress, JwtPayload } from "../types"
+} from "../models/social/sharing.js"
+import type { JointSession, ParticipantProgress, JwtPayload } from "../types/index.js"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

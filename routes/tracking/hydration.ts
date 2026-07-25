@@ -1,10 +1,10 @@
 // routes/tracking/hydration.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth"
+import { authenticateToken } from "../../middleware/auth.js"
 import {
   asyncHandler,
   ValidationError,
-} from "../../middleware/errorHandler"
+} from "../../middleware/errorHandler.js"
 import {
   logHydration,
   getHydrationHistory,
@@ -13,7 +13,7 @@ import {
   deleteHydrationEntry,
   getHydrationSettings,
   setHydrationSettings,
-} from "../../models/tracking/hydration"
+} from "../../models/tracking/hydration.js"
 
 const router: Router = Router()
 

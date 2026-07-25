@@ -1,17 +1,17 @@
 // routes/auth.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../middleware/auth"
+import { authenticateToken } from "../middleware/auth.js"
 import {
   asyncHandler,
   ConflictError,
   UnauthorizedError,
   ValidationError,
-} from "../middleware/errorHandler"
+} from "../middleware/errorHandler.js"
 import {
   validateRegistration,
   validateLogin,
   validateRequired,
-} from "../middleware/validation"
+} from "../middleware/validation.js"
 import {
   createUser,
   findUserByCredentials,
@@ -21,9 +21,9 @@ import {
   usernameExists,
   emailExists,
   changePassword,
-} from "../models/auth"
-import { updateUserProfile, deleteAllUserData } from "../models/user"
-import { issueWsTicket } from "../ws/wsServer"
+} from "../models/auth.js"
+import { updateUserProfile, deleteAllUserData } from "../models/user.js"
+import { issueWsTicket } from "../ws/wsServer.js"
 
 const router: Router = Router()
 

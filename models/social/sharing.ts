@@ -1,17 +1,17 @@
 // src/models/social/sharing.ts
-import { pool } from "../../config/database"
-import { query as dbQuery } from "../../config/database"
+import { pool } from "../../config/database.js"
+import { query as dbQuery } from "../../config/database.js"
 import type { RowDataPacket } from "mysql2"
-import type { InsertResult } from "../../types"
-import { NotFoundError, ConflictError } from "../../middleware/errorHandler"
-import { parseMuscleGroups } from "../workout"
+import type { InsertResult } from "../../types/index.js"
+import { NotFoundError, ConflictError } from "../../middleware/errorHandler.js"
+import { parseMuscleGroups } from "../workout.js"
 import type {
   Permission,
   PermissionType,
   JointSession,
   ParticipantProgress,
   JointSessionParticipant,
-} from "../../types"
+} from "../../types/index.js"
 
 export type { Permission, PermissionType, JointSession, ParticipantProgress }
 

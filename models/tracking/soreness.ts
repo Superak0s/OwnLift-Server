@@ -1,12 +1,12 @@
 // src/models/tracking/soreness.ts
 // Track muscle soreness (DOMS) by body part
 
-import { pool } from "../../config/database";
-import { query as dbQuery } from "../../config/database";
+import { pool } from "../../config/database.js";
+import { query as dbQuery } from "../../config/database.js";
 import type { RowDataPacket } from "mysql2";
-import type { InsertResult } from "../../types";
-import { formatDateForMySQL } from "../utils/dateHelpers";
-import { ValidationError } from "../../middleware/errorHandler";
+import type { InsertResult } from "../../types/index.js";
+import { formatDateForMySQL } from "../utils/dateHelpers.js";
+import { ValidationError } from "../../middleware/errorHandler.js";
 
 export interface SorenessEntry {
   id: number;

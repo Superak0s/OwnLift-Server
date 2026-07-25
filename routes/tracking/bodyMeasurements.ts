@@ -1,17 +1,17 @@
 // routes/tracking/bodyMeasurements.ts
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth"
+import { authenticateToken } from "../../middleware/auth.js"
 import {
   asyncHandler,
   ValidationError,
-} from "../../middleware/errorHandler"
+} from "../../middleware/errorHandler.js"
 import {
   logMeasurement,
   getMeasurementHistory,
   getLatestMeasurement,
   getMeasurementStats,
   deleteMeasurementEntry,
-} from "../../models/tracking/bodyMeasurements"
+} from "../../models/tracking/bodyMeasurements.js"
 
 const router: Router = Router()
 

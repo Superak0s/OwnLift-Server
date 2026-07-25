@@ -1,7 +1,7 @@
 // src/services/workoutService.ts
-import { pool } from "../config/database"
-import { ValidationError } from "../middleware/errorHandler"
-import { getUserProgram, getPersonWorkoutPlan } from "../models/workout/program"
+import { pool } from "../config/database.js"
+import { ValidationError } from "../middleware/errorHandler.js"
+import { getUserProgram, getPersonWorkoutPlan } from "../models/workout/program.js"
 import type {
   ProgramData,
   Exercise,
@@ -9,7 +9,7 @@ import type {
   RecommendationEntry,
   ExerciseValidationResult,
   WorkoutSplit,
-} from "../types"
+} from "../types/index.js"
 
 export type {
   DifficultyResult,
