@@ -341,3 +341,94 @@ CREATE TABLE IF NOT EXISTS joint_session_invites (
   CONSTRAINT fk_jsi_from FOREIGN KEY (from_user_id) REFERENCES users (id) ON DELETE CASCADE,
   CONSTRAINT fk_jsi_to   FOREIGN KEY (to_user_id)   REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- =============================================================================
+-- NEW TRACKING FEATURES
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- body_measurements
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS body_measurements (
+  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
+  user_id         INT UNSIGNED    NOT NULL,
+  waist_cm        DECIMAL(5,2)               DEFAULT NULL,
+  arm_left_cm     DECIMAL(5,2)               DEFAULT NULL,
+  arm_right_cm    DECIMAL(5,2)               DEFAULT NULL,
+  chest_cm        DECIMAL(5,2)               DEFAULT NULL,
+  measured_at     DATETIME        NOT NULL,
+  note            TEXT                       DEFAULT NULL,
+  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_bm_user_date (user_id, measured_at),
+  CONSTRAINT fk_body_measurements_user_id FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- hydration_log (water intake tracking)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS hydration_log (
+  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
+  user_id         INT UNSIGNED    NOT NULL,
+  amount_ml       DECIMAL(7,2)    NOT NULL,
+  logged_at       DATETIME        NOT NULL,
+  note            TEXT                       DEFAULT NULL,
+  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_hl_user_date (user_id, logged_at),
+  CONSTRAINT fk_hydration_log_user_id FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- sleep_log (sleep duration and quality)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sleep_log (
+  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
+  user_id         INT UNSIGNED    NOT NULL,
+  bedtime         DATETIME        NOT NULL,
+  wake_time       DATETIME        NOT NULL,
+  duration_hours  DECIMAL(4,2)               DEFAULT NULL,
+  quality         ENUM('poor','fair','good','excellent') DEFAULT 'good',
+  note            TEXT                       DEFAULT NULL,
+  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_sl_user_date (user_id, bedtime),
+  CONSTRAINT fk_sleep_log_user_id FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- muscle_soreness (DOMS) -- ADDED
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS muscle_soreness (
+  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
+  user_id         INT UNSIGNED    NOT NULL,
+  muscle_group    VARCHAR(128)               NOT NULL,
+  intensity       TINYINT                     NOT NULL,
+  logged_at       DATETIME        NOT NULL,
+  note            TEXT                       DEFAULT NULL,
+  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_ms_user_date (user_id, logged_at),
+  CONSTRAINT fk_ms_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- menstrual_cycle -- ADDED
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS menstrual_cycle (
+  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
+  user_id         INT UNSIGNED    NOT NULL,
+  cycle_start     DATETIME        NOT NULL,
+  cycle_end       DATETIME                  DEFAULT NULL,
+  duration_days   INT                        DEFAULT NULL,
+  flow_intensity  ENUM('light','moderate','heavy') DEFAULT 'moderate',
+  symptoms        TEXT                       DEFAULT NULL,
+  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_mc_user_start (user_id, cycle_start),
+  CONSTRAINT fk_mc_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+--

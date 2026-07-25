@@ -224,6 +224,12 @@ export async function deleteAllUserData(userId: number): Promise<void> {
       "workout_programs",
       "body_weight",
       "body_fat_measurements",
+      "body_measurements",
+      "hydration_log",
+      "sleep_log",
+      "muscle_soreness",
+      "menstrual_cycle",
+      "user_reminders",
       "supplements", // cascades supplement_log + supplement_locations
       "progress_photos",
       "macros_goals",

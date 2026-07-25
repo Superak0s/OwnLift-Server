@@ -89,7 +89,7 @@ function stripDates<T extends Record<string, unknown>>(row: T): T {
  * legacy comma-joined string. Anything else (null, empty, unexpected type)
  * becomes [].
  */
-function parseMuscleGroups(raw: unknown): string[] {
+export function parseMuscleGroups(raw: unknown): string[] {
   if (raw == null) return []
   if (Array.isArray(raw)) {
     return raw.filter((g): g is string => typeof g === "string")

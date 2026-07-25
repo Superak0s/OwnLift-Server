@@ -161,19 +161,112 @@ export async function getPhotosByDateRange(
   userId: number,
   startDate: string,
   endDate: string,
+  muscleGroup?: string | null,
+): Promise<PhotoMetadata[]> {
+  let query = `SELECT id, mime_type, file_size, taken_at, note, created_at FROM progress_photos
+               WHERE user_id = ? AND DATE(taken_at) BETWEEN ? AND ?`
+  const params: (number | string | null)[] = [userId, startDate, endDate]
+
+  if (muscleGroup) {
+    query += ` AND muscle_group = ?`
+    params.push(muscleGroup)
+  }
+
+  query += ` ORDER BY taken_at DESC`
+
+  const [rows] = await dbQuery<PhotoMetaRow[]>(query, params)
+  return rows.map(formatMeta)
+}
+
+// ─── Muscle group tagging ────────────────────────────────────────────────────
+
+export async function tagPhotoWithMuscle(
+  userId: number,
+  photoId: number,
+  muscleGroup: string,
+  muscleNotes?: string | null,
+): Promise<boolean> {
+  const [check] = await pool.execute<(RowDataPacket & { id: number })[]>(
+    "SELECT id FROM progress_photos WHERE id = ? AND user_id = ?",
+    [photoId, userId],
+  )
+  if (!check[0]) throw new NotFoundError("Photo")
+
+  const [result] = await pool.execute<
+    InsertResult & { constructor: { name: string } }
+  >(
+    `UPDATE progress_photos SET muscle_group = ?, muscle_notes = ? WHERE id = ? AND user_id = ?`,
+    [muscleGroup, muscleNotes ?? null, photoId, userId],
+  )
+  return (result as unknown as InsertResult).affectedRows > 0
+}
+
+export async function getPhotosByMuscle(
+  userId: number,
+  muscleGroup: string,
+  limit = 50,
 ): Promise<PhotoMetadata[]> {
   const [rows] = await dbQuery<PhotoMetaRow[]>(
-    `SELECT id, mime_type, file_size, taken_at, note, created_at FROM progress_photos WHERE user_id = ? AND DATE(taken_at) BETWEEN ? AND ? ORDER BY taken_at DESC`,
-    [userId, startDate, endDate],
+    `SELECT id, mime_type, file_size, taken_at, note, created_at FROM progress_photos
+     WHERE user_id = ? AND muscle_group = ? ORDER BY taken_at DESC LIMIT ?`,
+    [userId, muscleGroup, limit],
   )
   return rows.map(formatMeta)
 }
 
-export async function deleteAllPhotos(userId: number): Promise<number> {
-  const [result] = await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >(`DELETE FROM progress_photos WHERE user_id = ?`, [userId])
-  return (result as unknown as InsertResult).affectedRows
+export async function getPhotosByMuscleWithNotes(
+  userId: number,
+  muscleGroup: string,
+  limit = 50,
+): Promise<Array<PhotoMetadata & { muscleNotes?: string | null }>> {
+  interface PhotoWithNotes extends PhotoMetaRow {
+    muscle_notes: string | null
+  }
+
+  const [rows] = await dbQuery<PhotoWithNotes[]>(
+    `SELECT id, mime_type, file_size, taken_at, note, created_at, muscle_notes FROM progress_photos
+     WHERE user_id = ? AND muscle_group = ? ORDER BY taken_at DESC LIMIT ?`,
+    [userId, muscleGroup, limit],
+  )
+  return rows.map((row) => ({
+    ...formatMeta(row),
+    muscleNotes: row.muscle_notes,
+  }))
+}
+
+// ─── Photo comparison ───────────────────────────────────────────────────────
+
+export interface PhotoComparison {
+  before: PhotoMetadata
+  after: PhotoMetadata
+  daysBetween: number
+}
+
+export async function comparePhotos(
+  userId: number,
+  photoId1: number,
+  photoId2: number,
+): Promise<PhotoComparison> {
+  const photo1 = await getPhotoMetadata(userId, photoId1)
+  const photo2 = await getPhotoMetadata(userId, photoId2)
+
+  const daysBetween = Math.floor(
+    Math.abs(
+      new Date(photo1.takenAt).getTime() - new Date(photo2.takenAt).getTime(),
+    ) /
+      (1000 * 60 * 60 * 24),
+  )
+
+  const before =
+    photo1.takenAt < photo2.takenAt
+      ? photo1
+      : photo2
+  const after =
+    photo1.takenAt >= photo2.takenAt
+      ? photo1
+      : photo2
+
+  return { before, after, daysBetween }
 }
 
 function formatMeta(row: PhotoMetaRow): PhotoMetadata {

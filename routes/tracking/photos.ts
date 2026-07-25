@@ -9,6 +9,11 @@ import {
   getPhotoData,
   deleteProgressPhoto,
   updatePhotoNote,
+  tagPhotoWithMuscle,
+  getPhotosByMuscle,
+  getPhotosByMuscleWithNotes,
+  comparePhotos,
+  getPhotosByDateRange,
 } from "../../models/tracking/photos"
 
 const router: Router = Router()
@@ -104,6 +109,96 @@ router.delete(
     }
 
     res.json({ success: true })
+  }),
+)
+
+// ─── Muscle tagging ───────────────────────────────────────────────────────────
+
+/**
+ * POST /api/tracking/photos/:id/muscle
+ */
+router.post(
+  "/:id/muscle",
+  asyncHandler(async (req: Request, res: Response) => {
+    const photoId = parseInt(req.params.id)
+    const { muscleGroup, muscleNotes } = req.body
+
+    if (!muscleGroup) {
+      throw new ValidationError("Muscle group is required")
+    }
+
+    await tagPhotoWithMuscle(
+      req.user!.id,
+      photoId,
+      muscleGroup,
+      muscleNotes || null,
+    )
+    res.json({ success: true })
+  }),
+)
+
+/**
+ * GET /api/tracking/photos/by-muscle/:muscleGroup
+ */
+router.get(
+  "/by-muscle/:muscleGroup",
+  asyncHandler(async (req: Request, res: Response) => {
+    const { muscleGroup } = req.params
+    const withNotes = req.query.notes === "true"
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200)
+
+    const photos = withNotes
+      ? await getPhotosByMuscleWithNotes(req.user!.id, muscleGroup, limit)
+      : await getPhotosByMuscle(req.user!.id, muscleGroup, limit)
+
+    res.json({ success: true, photos })
+  }),
+)
+
+// ─── Photo comparison ────────────────────────────────────────────────────────
+
+/**
+ * GET /api/tracking/photos/compare?before=id1&after=id2
+ */
+router.get(
+  "/compare",
+  asyncHandler(async (req: Request, res: Response) => {
+    const beforeId = parseInt(req.query.before as string)
+    const afterId = parseInt(req.query.after as string)
+
+    if (isNaN(beforeId) || isNaN(afterId)) {
+      throw new ValidationError("Both 'before' and 'after' photo IDs are required")
+    }
+
+    const comparison = await comparePhotos(req.user!.id, beforeId, afterId)
+    res.json({ success: true, data: comparison })
+  }),
+)
+
+/**
+ * GET /api/tracking/photos/range/:startDate/:endDate
+ */
+router.get(
+  "/range/:startDate/:endDate",
+  asyncHandler(async (req: Request, res: Response) => {
+    const { startDate, endDate } = req.params
+    const { muscle } = req.query
+
+    // Validate date format (YYYY-MM-DD)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+      throw new ValidationError("Start date must be in YYYY-MM-DD format")
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+      throw new ValidationError("End date must be in YYYY-MM-DD format")
+    }
+
+    const photos = await getPhotosByDateRange(
+      req.user!.id,
+      startDate,
+      endDate,
+      muscle ? String(muscle) : undefined,
+    )
+    res.json({ success: true, photos })
   }),
 )
 

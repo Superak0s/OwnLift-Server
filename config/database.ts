@@ -158,6 +158,43 @@ export async function initializeTables(): Promise<void> {
   }
 }
 
+async function ensureAdditionalTrackingTables(): Promise<void> {
+  // Create tables that were added after initial schema versioning. Using
+  // CREATE TABLE IF NOT EXISTS keeps this idempotent and safe to run on an
+  // existing database.
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS muscle_soreness (
+      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id INT UNSIGNED NOT NULL,
+      muscle_group VARCHAR(128) NOT NULL,
+      intensity TINYINT NOT NULL,
+      logged_at DATETIME NOT NULL,
+      note TEXT DEFAULT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_ms_user_date (user_id, logged_at),
+      CONSTRAINT fk_ms_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `)
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS menstrual_cycle (
+      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id INT UNSIGNED NOT NULL,
+      cycle_start DATETIME NOT NULL,
+      cycle_end DATETIME DEFAULT NULL,
+      duration_days INT DEFAULT NULL,
+      flow_intensity ENUM('light','moderate','heavy') DEFAULT 'moderate',
+      symptoms TEXT DEFAULT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_mc_user_start (user_id, cycle_start),
+      CONSTRAINT fk_mc_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `)
+}
+
 export async function testDatabaseConnection(): Promise<void> {
   try {
     await createDatabaseIfNotExists()
@@ -165,6 +202,9 @@ export async function testDatabaseConnection(): Promise<void> {
     console.log("✓ Database connected successfully")
     connection.release()
     await initializeTables()
+    // Ensure any newer/additional tracking tables exist even if the DB was
+    // already initialized with an older schema version.
+    await ensureAdditionalTrackingTables()
     console.log("✓ Database is ready")
   } catch (error) {
     // Log only the message — never the error object itself as it may contain

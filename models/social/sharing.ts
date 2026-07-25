@@ -4,6 +4,7 @@ import { query as dbQuery } from "../../config/database"
 import type { RowDataPacket } from "mysql2"
 import type { InsertResult } from "../../types"
 import { NotFoundError, ConflictError } from "../../middleware/errorHandler"
+import { parseMuscleGroups } from "../workout"
 import type {
   Permission,
   PermissionType,
@@ -51,7 +52,9 @@ interface FriendSessionRow extends RowDataPacket {
   end_time: Date | string | null
   total_duration: number | null
   completed_sets: number
-  muscle_groups: string
+  // JSON column — mysql2 auto-parses this to string[] for most rows, but
+  // some legacy rows hold a plain comma-joined string. See parseMuscleGroups.
+  muscle_groups: string | string[]
 }
 
 interface SetTimingPublicRow extends RowDataPacket {
@@ -109,7 +112,6 @@ interface UserRow extends RowDataPacket {
   id: number
   username: string
 }
-
 
 interface ActiveSessionRow extends RowDataPacket {
   id: number
@@ -289,9 +291,7 @@ export async function getFriendSessions(friendId: number, limit = 60) {
     ...s,
     start_time: stripDate(s.start_time),
     end_time: stripDate(s.end_time),
-    muscle_groups: s.muscle_groups
-      ? (JSON.parse(s.muscle_groups) as string[])
-      : [],
+    muscle_groups: parseMuscleGroups(s.muscle_groups),
   }))
 }
 
@@ -309,9 +309,7 @@ export async function getFriendSessionDetails(
     ...rows[0],
     start_time: stripDate(rows[0].start_time),
     end_time: stripDate(rows[0].end_time),
-    muscle_groups: rows[0].muscle_groups
-      ? (JSON.parse(rows[0].muscle_groups) as string[])
-      : [],
+    muscle_groups: parseMuscleGroups(rows[0].muscle_groups),
   }
   const [timings] = await pool.execute<SetTimingPublicRow[]>(
     `SELECT st.id, st.set_index, st.weight, st.reps, st.set_duration, st.rest_time,
