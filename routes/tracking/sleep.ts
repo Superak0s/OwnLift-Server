@@ -74,7 +74,7 @@ router.get(
 router.delete(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const id = parseInt(req.params.id)
+    const id = parseInt(String(req.params.id))
     if (isNaN(id)) throw new ValidationError("Invalid sleep entry ID")
     const deleted = await deleteSleepEntry(req.user!.id, id)
     if (!deleted) throw new ValidationError("Sleep entry not found")

@@ -84,7 +84,7 @@ router.post(
 router.put(
   "/:id/end",
   asyncHandler(async (req: Request, res: Response) => {
-    const cycleId = parseInt(req.params.id)
+    const cycleId = parseInt(String(req.params.id))
     const { cycleEnd } = req.body
 
     if (isNaN(cycleId)) throw new ValidationError("Invalid cycle ID")
@@ -100,7 +100,7 @@ router.put(
 router.post(
   "/cycle/:id/end",
   asyncHandler(async (req: Request, res: Response) => {
-    const cycleId = parseInt(req.params.id)
+    const cycleId = parseInt(String(req.params.id))
     const { cycleEnd } = req.body
 
     if (isNaN(cycleId)) throw new ValidationError("Invalid cycle ID")
@@ -169,7 +169,7 @@ router.get(
 router.delete(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const id = parseInt(req.params.id)
+    const id = parseInt(String(req.params.id))
     if (isNaN(id)) throw new ValidationError("Invalid menstrual entry ID")
     const result = await deleteMenstrualEntry(req.user!.id, id)
     if (!result.deleted) throw new ValidationError("Menstrual entry not found")

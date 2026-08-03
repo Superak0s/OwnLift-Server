@@ -133,7 +133,7 @@ router.post(
 router.get(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     const supplement = await requireSupplement(req.user!.id, supplementId)
     const [takenToday, streak] = await Promise.all([
       hasTakenTodayServer(req.user!.id, supplementId),
@@ -156,7 +156,7 @@ router.get(
 router.patch(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     await requireSupplement(req.user!.id, supplementId)
 
     const {
@@ -218,7 +218,7 @@ router.patch(
 router.delete(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     const deleted = await deleteSupplement(req.user!.id, supplementId)
     if (!deleted) throw new NotFoundError("Supplement")
     res.json({ success: true })
@@ -233,7 +233,7 @@ router.delete(
 router.post(
   "/:id/log",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     const supplement = await requireSupplement(req.user!.id, supplementId)
     const { amount, takenAt, note } = req.body
 
@@ -263,7 +263,7 @@ router.post(
 router.get(
   "/:id/log",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     await requireSupplement(req.user!.id, supplementId)
 
     const limit = Math.min(parseInt(req.query.limit as string) || 30, 365)
@@ -289,10 +289,10 @@ router.get(
 router.delete(
   "/:id/log/:entryId",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     await requireSupplement(req.user!.id, supplementId)
 
-    const entryId = parseInt(req.params.entryId, 10)
+    const entryId = parseInt(String(req.params.entryId), 10)
     if (isNaN(entryId)) throw new ValidationError("Invalid entry id")
 
     const deleted = await deleteLogEntry(req.user!.id, entryId)
@@ -307,7 +307,7 @@ router.delete(
 router.get(
   "/:id/streak",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     await requireSupplement(req.user!.id, supplementId)
     const streak = await getStreak(req.user!.id, supplementId)
     res.json({ success: true, streak })
@@ -322,7 +322,7 @@ router.get(
 router.put(
   "/:id/location",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     await requireSupplement(req.user!.id, supplementId)
 
     const { latitude, longitude, address, radius } = req.body
@@ -361,7 +361,7 @@ router.put(
 router.get(
   "/:id/location",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     await requireSupplement(req.user!.id, supplementId)
     const location = await getLocation(req.user!.id, supplementId)
     res.json({ success: true, location, enabled: location?.enabled ?? false })
@@ -374,7 +374,7 @@ router.get(
 router.put(
   "/:id/location/toggle",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     await requireSupplement(req.user!.id, supplementId)
 
     const { enabled } = req.body
@@ -400,7 +400,7 @@ router.put(
 router.post(
   "/:id/location/check",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     await requireSupplement(req.user!.id, supplementId)
 
     const { latitude, longitude } = req.body
@@ -432,7 +432,7 @@ router.post(
 router.delete(
   "/:id/location",
   asyncHandler(async (req: Request, res: Response) => {
-    const supplementId = parseSupplementId(req.params.id)
+    const supplementId = parseSupplementId(String(req.params.id))
     await requireSupplement(req.user!.id, supplementId)
 
     const deleted = await deleteLocation(req.user!.id, supplementId)

@@ -121,7 +121,7 @@ router.get(
 router.get(
   "/stats/:date",
   asyncHandler(async (req: Request, res: Response) => {
-    const stats = await getMacrosStatsForDate(req.user!.id, req.params.date)
+    const stats = await getMacrosStatsForDate(req.user!.id, String(req.params.date))
     res.json({ success: true, stats })
   }),
 )
@@ -173,7 +173,7 @@ router.delete(
   asyncHandler(async (req: Request, res: Response) => {
     const deleted = await deleteMacrosEntry(
       req.user!.id,
-      parseInt(req.params.id),
+      parseInt(String(req.params.id)),
     )
     if (!deleted) throw new NotFoundError("Macro entry")
     res.json({ success: true, message: "Entry deleted successfully" })

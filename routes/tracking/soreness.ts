@@ -61,7 +61,7 @@ router.get(
 router.get(
   "/date/:date",
   asyncHandler(async (req: Request, res: Response) => {
-    const { date } = req.params
+    const date = String(req.params.date)
     // Validate date format (YYYY-MM-DD)
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new ValidationError("Date must be in YYYY-MM-DD format")
@@ -86,7 +86,7 @@ router.get(
 router.get(
   "/map/:date",
   asyncHandler(async (req: Request, res: Response) => {
-    const { date } = req.params
+    const date = String(req.params.date)
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new ValidationError("Date must be in YYYY-MM-DD format")
     }
@@ -121,7 +121,7 @@ router.get(
 router.delete(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const id = parseInt(req.params.id)
+    const id = parseInt(String(req.params.id))
     if (isNaN(id)) throw new ValidationError("Invalid soreness entry ID")
     const deleted = await deleteSorenessEntry(req.user!.id, id)
     if (!deleted) throw new ValidationError("Soreness entry not found")

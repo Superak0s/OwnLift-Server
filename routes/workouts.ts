@@ -153,7 +153,7 @@ router.post(
   validateSetTiming,
   asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user!.id
-    const sessionId = parseId(req.params.sessionId)
+    const sessionId = parseId(String(req.params.sessionId))
     if (sessionId === null) throw new ValidationError("Invalid session ID")
 
     const {
@@ -212,8 +212,8 @@ router.patch(
   validateSetTimingUpdate,
   asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user!.id
-    const sessionId = parseId(req.params.sessionId)
-    const setId = parseId(req.params.setId)
+    const sessionId = parseId(String(req.params.sessionId))
+    const setId = parseId(String(req.params.setId))
     if (sessionId === null || setId === null) {
       throw new ValidationError("Invalid session or set ID")
     }
@@ -231,7 +231,7 @@ router.post(
   authenticateToken,
   asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user!.id
-    const sessionId = parseId(req.params.sessionId)
+    const sessionId = parseId(String(req.params.sessionId))
     if (sessionId === null) throw new ValidationError("Invalid session ID")
 
     const row = await requireOwnSession(sessionId, userId)
@@ -258,7 +258,7 @@ router.get(
   authenticateToken,
   asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user!.id
-    const sessionId = parseId(req.params.sessionId)
+    const sessionId = parseId(String(req.params.sessionId))
     if (sessionId === null) throw new ValidationError("Invalid session ID")
 
     const session = await getSessionDetails(sessionId, userId)
@@ -296,7 +296,7 @@ router.delete(
   authenticateToken,
   asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user!.id
-    const { person } = req.params
+    const person = String(req.params.person)
 
     const result = await deleteAllSessionsForPerson(userId, person)
     res.json(result)

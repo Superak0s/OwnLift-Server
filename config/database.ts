@@ -200,6 +200,106 @@ async function ensureAdditionalTrackingTables(): Promise<void> {
       CONSTRAINT fk_mc_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+
+  // ─── Active DOMS (soreness with follow-ups) ──────────────────────────
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS active_soreness (
+      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id INT UNSIGNED NOT NULL,
+      muscle_group VARCHAR(128) NOT NULL,
+      intensity TINYINT NOT NULL,
+      notes TEXT DEFAULT NULL,
+      logged_at DATETIME NOT NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      recovered_at DATETIME DEFAULT NULL,
+      status ENUM('active','recovering','recovered') NOT NULL DEFAULT 'active',
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_as_user_status (user_id, status),
+      KEY idx_as_user_muscle (user_id, muscle_group),
+      CONSTRAINT fk_as_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS soreness_follow_up (
+      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      soreness_id INT UNSIGNED NOT NULL,
+      intensity TINYINT NOT NULL,
+      status ENUM('still_sore','better','recovered') NOT NULL,
+      notes TEXT DEFAULT NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_sf_soreness (soreness_id),
+      CONSTRAINT fk_sf_soreness FOREIGN KEY (soreness_id) REFERENCES active_soreness (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  // ─── Injury tracking ─────────────────────────────────────────────────
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS injuries (
+      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id INT UNSIGNED NOT NULL,
+      muscle_group VARCHAR(128) NOT NULL,
+      injury_type ENUM('strain','sprain','tendonitis','fracture','dislocation','tear','overuse','surgery','other') NOT NULL,
+      pain_level TINYINT NOT NULL,
+      start_date DATETIME NOT NULL,
+      recovery_date DATETIME DEFAULT NULL,
+      notes TEXT DEFAULT NULL,
+      status ENUM('active','recovering','recovered') NOT NULL DEFAULT 'active',
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_inj_user_status (user_id, status),
+      KEY idx_inj_user_muscle (user_id, muscle_group),
+      CONSTRAINT fk_inj_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  // ─── Progress photos with muscle tags ────────────────────────────────
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS progress_photos_muscle (
+      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id INT UNSIGNED NOT NULL,
+      uri VARCHAR(1024) NOT NULL,
+      taken_at DATETIME NOT NULL,
+      notes TEXT DEFAULT NULL,
+      angle ENUM('front','back','side','custom') NOT NULL DEFAULT 'custom',
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_ppm_user_taken (user_id, taken_at),
+      CONSTRAINT fk_ppm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS progress_photos_muscle_tags (
+      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      photo_id INT UNSIGNED NOT NULL,
+      muscle_group VARCHAR(128) NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_ppmt_photo (photo_id),
+      KEY idx_ppmt_muscle (muscle_group),
+      CONSTRAINT fk_ppmt_photo FOREIGN KEY (photo_id) REFERENCES progress_photos_muscle (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  // ─── Personal muscle notes ───────────────────────────────────────────
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS personal_muscle_notes (
+      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id INT UNSIGNED NOT NULL,
+      muscle_group VARCHAR(128) NOT NULL,
+      content TEXT NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_pmn_user_muscle (user_id, muscle_group),
+      CONSTRAINT fk_pmn_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
 }
 
 export async function testDatabaseConnection(): Promise<void> {

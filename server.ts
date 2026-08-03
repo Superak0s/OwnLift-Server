@@ -6,7 +6,7 @@ import helmet from "helmet"
 import rateLimit from "express-rate-limit"
 import dotenv from "dotenv"
 import { randomUUID } from "crypto"
-import { version } from "./package.json" with { type: "json" }
+import packageJson from "./package.json" with { type: "json" }
 import { startStaleSessionCleanup } from "./jobs/sessionCleanup.js"
 
 dotenv.config()
@@ -124,7 +124,7 @@ createWsServer(server)
 async function start() {
   await testDatabaseConnection()
   server.listen(PORT, () => {
-    console.log(`🚀 OwnLift Server v${version} running on port ${PORT}`)
+    console.log(`🚀 OwnLift Server v${packageJson.version} running on port ${PORT}`)
     startStaleSessionCleanup()
   })
 }

@@ -166,7 +166,7 @@ router.post(
       throw err
     }
 
-    const { notifyFriendRequest } = await import("../../ws/wsServer")
+    const { notifyFriendRequest } = await import("../../ws/wsServer.js")
     notifyFriendRequest(targetUser.id, {
       friendshipId,
       fromUserId: req.user!.id,
@@ -192,7 +192,7 @@ router.post(
 router.post(
   "/request/:friendshipId/accept",
   asyncHandler(async (req: Request, res: Response) => {
-    const friendshipId = parseInt(req.params.friendshipId, 10)
+    const friendshipId = parseInt(String(req.params.friendshipId), 10)
     if (isNaN(friendshipId)) throw new ValidationError("Invalid friendship ID")
 
     try {
@@ -212,7 +212,7 @@ router.post(
 router.post(
   "/request/:friendshipId/reject",
   asyncHandler(async (req: Request, res: Response) => {
-    const friendshipId = parseInt(req.params.friendshipId, 10)
+    const friendshipId = parseInt(String(req.params.friendshipId), 10)
     if (isNaN(friendshipId)) throw new ValidationError("Invalid friendship ID")
 
     try {
@@ -232,7 +232,7 @@ router.post(
 router.delete(
   "/:friendId",
   asyncHandler(async (req: Request, res: Response) => {
-    const friendId = parseInt(req.params.friendId, 10)
+    const friendId = parseInt(String(req.params.friendId), 10)
     if (isNaN(friendId)) throw new ValidationError("Invalid friend ID")
 
     try {

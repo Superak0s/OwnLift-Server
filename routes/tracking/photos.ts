@@ -74,7 +74,7 @@ router.get(
 router.get(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const photoId = parseInt(req.params.id)
+    const photoId = parseInt(String(req.params.id))
     const result = await getPhotoData(req.user!.id, photoId)
 
     res.set("Content-Type", result.mimeType)
@@ -89,7 +89,7 @@ router.get(
 router.patch(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const photoId = parseInt(req.params.id)
+    const photoId = parseInt(String(req.params.id))
     await updatePhotoNote(req.user!.id, photoId, req.body.note)
     res.json({ success: true })
   }),
@@ -101,7 +101,7 @@ router.patch(
 router.delete(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const photoId = parseInt(req.params.id)
+    const photoId = parseInt(String(req.params.id))
     const deleted = await deleteProgressPhoto(req.user!.id, photoId)
 
     if (!deleted) {
@@ -120,7 +120,7 @@ router.delete(
 router.post(
   "/:id/muscle",
   asyncHandler(async (req: Request, res: Response) => {
-    const photoId = parseInt(req.params.id)
+    const photoId = parseInt(String(req.params.id))
     const { muscleGroup, muscleNotes } = req.body
 
     if (!muscleGroup) {
@@ -143,7 +143,7 @@ router.post(
 router.get(
   "/by-muscle/:muscleGroup",
   asyncHandler(async (req: Request, res: Response) => {
-    const { muscleGroup } = req.params
+    const muscleGroup = String(req.params.muscleGroup)
     const withNotes = req.query.notes === "true"
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 200)
 
@@ -181,7 +181,8 @@ router.get(
 router.get(
   "/range/:startDate/:endDate",
   asyncHandler(async (req: Request, res: Response) => {
-    const { startDate, endDate } = req.params
+    const startDate = String(req.params.startDate)
+    const endDate = String(req.params.endDate)
     const { muscle } = req.query
 
     // Validate date format (YYYY-MM-DD)

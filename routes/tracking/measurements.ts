@@ -38,7 +38,7 @@ router.get(
 router.delete(
   "/types/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const id = parseInt(req.params.id)
+    const id = parseInt(String(req.params.id))
     if (isNaN(id)) throw new ValidationError("Invalid type id")
     const ok = await deleteMeasurementType(req.user!.id, id)
     if (!ok) throw new ValidationError("Measurement type not found")
@@ -61,7 +61,7 @@ router.post(
 router.get(
   "/values/:date",
   asyncHandler(async (req: Request, res: Response) => {
-    const { date } = req.params
+    const date = String(req.params.date)
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new ValidationError("Date must be in YYYY-MM-DD format")
     const values = await getCustomMeasurementsForDate(req.user!.id, date)
     res.json({ success: true, data: values })
@@ -72,7 +72,7 @@ router.get(
 router.get(
   "/values/type/:typeId",
   asyncHandler(async (req: Request, res: Response) => {
-    const typeId = parseInt(req.params.typeId)
+    const typeId = parseInt(String(req.params.typeId))
     const limit = req.query.limit ? parseInt(String(req.query.limit)) : 90
     if (isNaN(typeId)) throw new ValidationError("Invalid typeId")
     const values = await getMeasurementValues(req.user!.id, typeId, limit)

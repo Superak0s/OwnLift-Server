@@ -56,7 +56,7 @@ router.get(
 router.get(
   "/daily/:date",
   asyncHandler(async (req: Request, res: Response) => {
-    const { date } = req.params
+    const date = String(req.params.date)
     // Validate date format (YYYY-MM-DD)
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new ValidationError("Date must be in YYYY-MM-DD format")
@@ -105,7 +105,7 @@ router.post(
 router.delete(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const id = parseInt(req.params.id)
+    const id = parseInt(String(req.params.id))
     if (isNaN(id)) throw new ValidationError("Invalid hydration entry ID")
     const deleted = await deleteHydrationEntry(req.user!.id, id)
     if (!deleted) throw new ValidationError("Hydration entry not found")

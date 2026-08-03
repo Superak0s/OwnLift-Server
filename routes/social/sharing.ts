@@ -119,7 +119,7 @@ router.get(
 router.delete(
   "/permissions/:permissionId",
   asyncHandler(async (req: Request, res: Response) => {
-    const permissionId = parseIntParam(req.params.permissionId, "permissionId")
+    const permissionId = parseIntParam(String(req.params.permissionId), "permissionId")
     try {
       await revokePermission(req.user!.id, permissionId)
     } catch (err) {
@@ -136,7 +136,7 @@ router.delete(
 router.get(
   "/sessions/friend/:friendId",
   asyncHandler(async (req: Request, res: Response) => {
-    const friendId = parseIntParam(req.params.friendId, "friendId")
+    const friendId = parseIntParam(String(req.params.friendId), "friendId")
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 60, 200)
 
     if (!(await areFriends(req.user!.id, friendId)))
@@ -152,8 +152,8 @@ router.get(
 router.get(
   "/sessions/friend/:friendId/:sessionId",
   asyncHandler(async (req: Request, res: Response) => {
-    const friendId = parseIntParam(req.params.friendId, "friendId")
-    const sessionId = parseIntParam(req.params.sessionId, "sessionId")
+    const friendId = parseIntParam(String(req.params.friendId), "friendId")
+    const sessionId = parseIntParam(String(req.params.sessionId), "sessionId")
 
     if (!(await areFriends(req.user!.id, friendId)))
       throw new ForbiddenError("Can only view sessions of friends")
@@ -206,7 +206,7 @@ router.get(
 router.get(
   "/analytics/friend/:friendId",
   asyncHandler(async (req: Request, res: Response) => {
-    const friendId = parseIntParam(req.params.friendId, "friendId")
+    const friendId = parseIntParam(String(req.params.friendId), "friendId")
 
     if (!(await areFriends(req.user!.id, friendId)))
       throw new ForbiddenError("Can only view analytics of friends")
@@ -275,7 +275,7 @@ router.get(
 router.get(
   "/joint-sessions/friend/:friendId/status",
   asyncHandler(async (req: Request, res: Response) => {
-    const friendId = parseIntParam(req.params.friendId, "friendId")
+    const friendId = parseIntParam(String(req.params.friendId), "friendId")
 
     if (!(await areFriends(req.user!.id, friendId)))
       throw new ForbiddenError("Not friends")
@@ -340,7 +340,7 @@ router.get(
 router.get(
   "/joint-sessions/invites/:inviteId",
   asyncHandler(async (req: Request, res: Response) => {
-    const inviteId = parseIntParam(req.params.inviteId, "inviteId")
+    const inviteId = parseIntParam(String(req.params.inviteId), "inviteId")
     const invite = await getInvite(inviteId)
     if (!invite) throw new NotFoundError("Invite")
     if (
@@ -382,7 +382,7 @@ router.get(
 router.post(
   "/joint-sessions/invites/:inviteId/accept",
   asyncHandler(async (req: Request, res: Response) => {
-    const inviteId = parseIntParam(req.params.inviteId, "inviteId")
+    const inviteId = parseIntParam(String(req.params.inviteId), "inviteId")
 
     // Pre-flight: check invite hasn't expired
     const invite = await getInvite(inviteId)
@@ -428,7 +428,7 @@ router.post(
 router.post(
   "/joint-sessions/invites/:inviteId/decline",
   asyncHandler(async (req: Request, res: Response) => {
-    const inviteId = parseIntParam(req.params.inviteId, "inviteId")
+    const inviteId = parseIntParam(String(req.params.inviteId), "inviteId")
     const invite = await getInvite(inviteId)
 
     try {
@@ -448,7 +448,7 @@ router.get(
   "/joint-sessions/:jointSessionId",
   asyncHandler(async (req: Request, res: Response) => {
     const jointSessionId = parseIntParam(
-      req.params.jointSessionId,
+      String(req.params.jointSessionId),
       "jointSessionId",
     )
     const session = await getJointSession(jointSessionId)
@@ -472,7 +472,7 @@ router.patch(
       exerciseNames,
     } = req.body
     const jointSessionId = parseIntParam(
-      req.params.jointSessionId,
+      String(req.params.jointSessionId),
       "jointSessionId",
     )
 
@@ -512,7 +512,7 @@ router.delete(
   "/joint-sessions/:jointSessionId/leave",
   asyncHandler(async (req: Request, res: Response) => {
     const jointSessionId = parseIntParam(
-      req.params.jointSessionId,
+      String(req.params.jointSessionId),
       "jointSessionId",
     )
     const session = await getJointSession(jointSessionId)
@@ -541,7 +541,7 @@ router.delete(
 router.get(
   "/watch/friend/:friendId/active",
   asyncHandler(async (req: Request, res: Response) => {
-    const friendId = parseIntParam(req.params.friendId, "friendId")
+    const friendId = parseIntParam(String(req.params.friendId), "friendId")
 
     if (!(await areFriends(req.user!.id, friendId)))
       throw new ForbiddenError("Not friends")
@@ -558,8 +558,8 @@ router.get(
 router.get(
   "/watch/friend/:friendId/session/:sessionId/live",
   asyncHandler(async (req: Request, res: Response) => {
-    const friendId = parseIntParam(req.params.friendId, "friendId")
-    const sessionId = parseIntParam(req.params.sessionId, "sessionId")
+    const friendId = parseIntParam(String(req.params.friendId), "friendId")
+    const sessionId = parseIntParam(String(req.params.sessionId), "sessionId")
 
     if (!(await areFriends(req.user!.id, friendId)))
       throw new ForbiddenError("Not friends")

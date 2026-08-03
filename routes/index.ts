@@ -21,6 +21,10 @@ import supplementRoutes from "./tracking/supplements.js"
 import photoRoutes from "./tracking/photos.js"
 import customMeasurementsRoutes from "./tracking/measurements.js"
 import remindersRoutes from "./reminders.js"
+import domsRoutes from "./tracking/doms.js"
+import injuryRoutes from "./tracking/injury.js"
+import progressPhotoRoutes from "./tracking/progressPhoto.js"
+import personalNotesRoutes from "./tracking/personalNotes.js"
 
 export function registerRoutes(app: Application): void {
   app.use("/api/version", versionRoutes)
@@ -42,5 +46,9 @@ export function registerRoutes(app: Application): void {
   app.use("/api/tracking/supplements", supplementRoutes)
   app.use("/api/tracking/photos", photoRoutes)
   app.use("/api/tracking/custom-measurements", customMeasurementsRoutes)
+  app.use("/api/tracking/doms", domsRoutes)
+  app.use("/api/tracking/injuries", injuryRoutes)
+  app.use("/api/tracking/progress-photos", progressPhotoRoutes)
+  app.use("/api/tracking/personal-notes", personalNotesRoutes)
   app.use("/api/reminders", remindersRoutes)
 }

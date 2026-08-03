@@ -76,7 +76,7 @@ router.get(
 router.delete(
   "/weight/:id",
   asyncHandler(async (req: Request, res: Response) => {
-    const entryId = parseInt(req.params.id)
+    const entryId = parseInt(String(req.params.id))
     const deleted = await deleteWeightEntry(req.user!.id, entryId)
     if (!deleted) throw new NotFoundError("Weight entry")
     res.json({ success: true })
@@ -253,7 +253,7 @@ router.delete(
   asyncHandler(async (req: Request, res: Response) => {
     const deleted = await deleteBodyFatEntry(
       req.user!.id,
-      parseInt(req.params.id),
+      parseInt(String(req.params.id)),
     )
     if (!deleted) throw new NotFoundError("Body fat entry")
     res.json({ success: true, message: "Entry deleted successfully" })
