@@ -12,9 +12,9 @@ if %errorlevel% neq 0 (
     pause & exit /b 1
 )
 
-:: ─── [0/3] Version Management ───────────────────────────────────────────────
+:: ─── [0/4] Version Management ───────────────────────────────────────────────
 echo.
-echo [0/3] Version management...
+echo [0/4] Version management...
 
 for /f "delims=" %%i in ('node -e "console.log(require('%SERVER_DIR:\=\\%/package.json').version)"') do set CURRENT_VERSION=%%i
 
@@ -48,27 +48,47 @@ node -e "const fs=require('fs'); const p=require('%SERVER_DIR:\=\\%/package.json
 
 echo Version updated successfully!
 
-:: ─── [1/3] Git Push ─────────────────────────────────────────────────────────
+:: ─── [1/4] Sync lockfile ────────────────────────────────────────────────────
 echo.
-echo [1/3] Pushing source code to GitHub...
+echo [1/4] Syncing pnpm lockfile...
 
 cd /d "%SERVER_DIR%"
+call pnpm install
+
+if %errorlevel% neq 0 (
+    echo ERROR: pnpm install failed. Fix issues before releasing.
+    pause & exit /b 1
+)
+
+:: ─── [2/4] Git Push ─────────────────────────────────────────────────────────
+echo.
+echo [2/4] Pushing source code to GitHub...
+
+echo Changing to server directory...
+cd /d "%SERVER_DIR%"
+
+echo Staging changes with git add...
 git add .
+echo git add finished, errorlevel=%errorlevel%
 
 set /p COMMIT_MSG="Enter commit message (or press Enter for default): "
 if "%COMMIT_MSG%"=="" set COMMIT_MSG=Release update v%NEW_VERSION%
 
+echo Checking for staged changes...
 git diff --cached --quiet
 if %errorlevel%==0 (
     echo No changes to commit.
 ) else (
+    echo Committing...
     git commit -m "%COMMIT_MSG%"
+    echo Pushing to origin/main...
     git push origin main
+    echo git push finished, errorlevel=%errorlevel%
 )
 
-:: ─── [2/3] Build Docker image ───────────────────────────────────────────────
+:: ─── [3/4] Build Docker image ───────────────────────────────────────────────
 echo.
-echo [2/3] Building Docker image...
+echo [3/4] Building Docker image...
 cd /d "%SERVER_DIR%"
 
 for /f "delims=" %%i in ('node -p "require('./package.json').version"') do set VERSION=%%i
@@ -82,9 +102,9 @@ if %errorlevel% neq 0 (
     pause & exit /b 1
 )
 
-:: ─── [3/3] Push to Docker Hub ───────────────────────────────────────────────
+:: ─── [4/4] Push to Docker Hub ───────────────────────────────────────────────
 echo.
-echo [3/3] Pushing image to Docker Hub...
+echo [4/4] Pushing image to Docker Hub...
 
 docker push "%DOCKER_IMAGE%:latest"
 if %errorlevel% neq 0 (
