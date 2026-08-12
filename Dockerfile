@@ -23,7 +23,7 @@ COPY package.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
-RUN mkdir -p uploads
+RUN mkdir -p uploads public
 RUN printf '#!/bin/sh\nexec node /app/dist/ownlift.js "$@"\n' > /usr/local/bin/ownlift && chmod +x /usr/local/bin/ownlift
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 RUN chown -R appuser:appgroup /app
