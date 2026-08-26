@@ -1,10 +1,9 @@
-// src/middleware/errorHandler.ts
 import { Request, Response, NextFunction } from "express"
+import { logger } from "../utils/logger.js"
 
-export class AppError extends Error {
+class AppError extends Error {
   statusCode: number
   details: unknown
-  isOperational = true
 
   constructor(message: string, statusCode = 500, details: unknown = null) {
     super(message)
@@ -57,7 +56,7 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ): void {
-  console.error("Error:", {
+  logger.error("Error:", {
     message: err.message,
     stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
     path: req.path,
@@ -66,14 +65,14 @@ export function errorHandler(
   })
 
   const statusCode = (err as AppError).statusCode ?? 500
-  const isOperational = (err as AppError).isOperational === true
   const isDev = process.env.NODE_ENV === "development"
 
   // Never leak internal error details (raw DB/driver messages, stack traces)
-  // for server errors in production. Only trusted operational errors (our own
-  // AppError subclasses) expose their message; everything else is generic.
+  // for server errors in production. Anything that isn't one of our own
+  // AppError subclasses has no statusCode, so it falls through to 500 and
+  // gets the generic message.
   const safeMessage =
-    statusCode < 500 && isOperational
+    statusCode < 500
       ? err.message
       : isDev
         ? err.message || "Internal server error"

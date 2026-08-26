@@ -1,24 +1,22 @@
-// src/ws/wsServer.ts
 import { WebSocketServer, WebSocket, RawData } from "ws"
 import http from "http"
 import jwt from "jsonwebtoken"
-import { randomUUID } from "crypto"
 import { pool } from "../config/database.js"
-import { getTokenVersion } from "../features/auth/auth.model.js"
+import { findUserForAuth } from "../features/auth/auth.model.js"
+import { logger } from "../utils/logger.js"
 import {
   getJointSession,
   updateParticipantProgress,
 } from "../features/social/sharing/sharing.model.js"
-import type { JointSession, ParticipantProgress, JwtPayload } from "../types/index.js"
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+import type { JointSession, ParticipantProgress } from "../features/social/social.types.js"
+import type { JwtPayload } from "../features/auth/auth.types.js"
 
 interface WsUser {
   id: number
   username: string
 }
 
-export interface ProgressPayload extends ParticipantProgress {
+interface ProgressPayload extends ParticipantProgress {
   fromUserId?: number
 }
 
@@ -29,66 +27,20 @@ interface WsMessage {
   progress?: ProgressPayload
 }
 
+// Only the state the heartbeat sweep needs — it runs outside the
+// per-connection closure, so it cannot reach that scope. Everything else
+// (auth timer, pre-auth message count) stays closure-local.
 interface ExtendedWebSocket extends WebSocket {
   _pongReceived?: boolean
   _userId?: number
-  _authenticated?: boolean
-  _authTimeout?: NodeJS.Timeout
-  _preAuthMsgCount?: number
 }
-
-// ─── One-time WS ticket store ─────────────────────────────────────────────────
-//
-// Rather than passing the long-lived JWT in the URL (visible in server logs and
-// HTTP proxies), clients first call POST /api/auth/ws-ticket to get a
-// short-lived, single-use ticket and present that in the WS handshake URL.
-//
-// ⚠️  NOTE: This store is in-process memory. On a single-process deployment
-// this is fine. If you ever run multiple Node processes (PM2 cluster, k8s with
-// multiple replicas) you MUST move this to a shared store (Redis, DB table)
-// or tickets issued by one process will not be found by another.
-
-interface Ticket {
-  userId: number
-  expiresAt: number // epoch ms
-}
-
-const wsTickets = new Map<string, Ticket>()
-const TICKET_TTL_MS = 30_000 // 30 seconds — enough time to open the socket
-
-export function issueWsTicket(userId: number): string {
-  const ticket = randomUUID()
-  wsTickets.set(ticket, { userId, expiresAt: Date.now() + TICKET_TTL_MS })
-  // Expire stale tickets lazily on each issue (low frequency operation)
-  for (const [k, v] of wsTickets) {
-    if (v.expiresAt < Date.now()) wsTickets.delete(k)
-  }
-  return ticket
-}
-
-function consumeWsTicket(ticket: string): number | null {
-  const t = wsTickets.get(ticket)
-  if (!t) return null
-  wsTickets.delete(ticket) // single-use
-  if (t.expiresAt < Date.now()) return null
-  return t.userId
-}
-
-// ─── Connection registry ──────────────────────────────────────────────────────
 
 const clients = new Map<number, WebSocket>()
 
 // Per-user message counter for rate limiting (messages in the last second)
-// ⚠️  NOTE: Also in-process memory — same multi-instance caveat as wsTickets.
+// ⚠️  NOTE: In-process memory, so this server is single-instance only. Running
+// multiple Node processes (PM2 cluster, k8s replicas) needs a shared store.
 const msgCount = new Map<number, number>()
-const MAX_MSG_BYTES = 8 * 1024 // 8 KB per message
-const MAX_MSG_PER_SEC = 20
-const MAX_PREAUTH_MSGS = 10 // messages allowed before authenticating
-
-// Heartbeat interval — ping every connected client every 30 s.
-const PING_INTERVAL_MS = 30_000
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function send(ws: WebSocket | undefined, type: string, payload: object): void {
   if (ws?.readyState === WebSocket.OPEN)
@@ -98,32 +50,6 @@ function send(ws: WebSocket | undefined, type: string, payload: object): void {
 function sendToUser(userId: number, type: string, payload: object): void {
   send(clients.get(userId), type, payload)
 }
-
-async function loadWsUser(userId: number): Promise<WsUser | null> {
-  const [users] = await pool.execute<any[]>(
-    "SELECT id, username FROM users WHERE id = ?",
-    [userId],
-  )
-  return (users[0] as WsUser) ?? null
-}
-
-async function authenticateWs(req: http.IncomingMessage): Promise<WsUser> {
-  const params = new URL(req.url!, "ws://localhost").searchParams
-
-  // One-time ticket only. Raw JWT-in-URL auth was removed — the long-lived
-  // token would otherwise land in server/proxy access logs. Clients without a
-  // ticket must authenticate via the post-connection `auth` message instead.
-  const ticket = params.get("ticket")
-  if (!ticket) throw new Error("No ticket")
-  const userId = consumeWsTicket(ticket)
-  if (userId === null) throw new Error("Invalid or expired ticket")
-
-  const user = await loadWsUser(userId)
-  if (!user) throw new Error("User not found")
-  return user
-}
-
-// ─── Message handlers ─────────────────────────────────────────────────────────
 
 async function handlePushJointProgress(
   ws: WebSocket,
@@ -142,7 +68,6 @@ async function handlePushJointProgress(
     setIndex: progress?.setIndex ?? null,
     exerciseName: progress?.exerciseName ?? null,
     readyForNext: progress?.readyForNext || false,
-    selectedPerson: progress?.selectedPerson ?? null,
     exerciseNames: progress?.exerciseNames ?? null,
   })
 
@@ -170,21 +95,6 @@ async function handleLeaveJointSession(
     sendToUser(partner.userId, "joint_session_ended", { jointSessionId })
 }
 
-// ─── Exported notify helpers (called from REST routes) ───────────────────────
-
-export const notifyJointInvite = (toUserId: number, invite: object) =>
-  sendToUser(toUserId, "joint_invite", invite)
-export const notifyInviteStatus = (
-  toUserId: number,
-  status: string,
-  jointSession: object | null = null,
-) => sendToUser(toUserId, "invite_status", { status, jointSession })
-export const notifyFriendRequest = (toUserId: number, request: object) =>
-  sendToUser(toUserId, "friend_request_received", request)
-export const notifyWatcher = (watcherUserId: number, sessionSnapshot: object) =>
-  sendToUser(watcherUserId, "live_session_update", {
-    liveSession: sessionSnapshot,
-  })
 export { sendToUser }
 
 export function notifyJointProgress(
@@ -200,29 +110,6 @@ export function notifyJointProgress(
     })
 }
 
-// ─── Connection setup helper ──────────────────────────────────────────────────
-
-function setupAuthenticatedConnection(
-  ws: WebSocket,
-  extWs: ExtendedWebSocket,
-  user: WsUser,
-) {
-  // Close any existing socket for this user (prevent zombie connections)
-  const existing = clients.get(user.id)
-  if (existing && existing.readyState === WebSocket.OPEN) {
-    existing.close(1000, "Replaced by new connection")
-  }
-
-  clients.set(user.id, ws)
-  console.log(`[WS] connection ready uid=${user.id} (${user.username})`)
-
-  ws.on("pong", () => {
-    extWs._pongReceived = true
-  })
-}
-
-// ─── Server setup ─────────────────────────────────────────────────────────────
-
 // Set by createWsServer; called from server.ts's shutdown() so SIGINT (not
 // just SIGTERM) also closes WS connections gracefully.
 let wsCleanup: (() => void) | null = null
@@ -234,63 +121,46 @@ export function closeWsServer(): void {
 export function createWsServer(httpServer: http.Server): WebSocketServer {
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" })
 
-  // ── Heartbeat: ping all live clients every PING_INTERVAL_MS ──────────────
   const heartbeat = setInterval(() => {
     wss.clients.forEach((ws) => {
       const ext = ws as ExtendedWebSocket
       if (ext._pongReceived === false) {
-        console.warn(`[WS] terminating stale connection uid=${ext._userId}`)
+        logger.warn(`[WS] terminating stale connection uid=${ext._userId}`)
         ws.terminate()
         return
       }
       ext._pongReceived = false
       ws.ping()
     })
-  }, PING_INTERVAL_MS)
+  }, 30_000)
 
   wss.on("close", () => clearInterval(heartbeat))
 
   wss.on("connection", async (ws: WebSocket, req: http.IncomingMessage) => {
     const extWs = ws as ExtendedWebSocket
     extWs._pongReceived = true
-    extWs._authenticated = false
 
-    console.log("[WS] connection attempt from", req.socket.remoteAddress)
+    logger.info("[WS] connection attempt from", req.socket.remoteAddress)
 
-    // Try to authenticate from URL (for backwards compat with ticket/token in URL)
+    // Auth happens over the socket, never in the handshake URL — a long-lived
+    // JWT in the URL would land in server and proxy access logs. Set by the
+    // `auth` message handler below, then read by every later message.
     let user: WsUser | null = null
-    try {
-      user = await authenticateWs(req)
-      extWs._authenticated = true
-      extWs._userId = user.id
-      console.log(`[WS] authenticated via URL uid=${user.id}`)
-    } catch (err) {
-      const msg = (err as Error).message
-      console.log("[WS] no URL auth, expecting auth message:", msg)
+    let preAuthMsgCount = 0
 
-      // Don't close immediately — wait for auth message
-      // Set a timeout: if no auth message arrives in 5s, close
-      const authTimeout = setTimeout(() => {
-        if (!extWs._authenticated) {
-          console.warn("[WS] auth timeout, no auth message received")
-          ws.close(4001, "Unauthorized: No auth message")
-        }
-      }, 5000)
-
-      extWs._authTimeout = authTimeout
-    }
-
-    // If already authenticated via URL, proceed with normal setup
-    if (user) {
-      setupAuthenticatedConnection(ws, extWs, user)
-    }
+    const authTimeout = setTimeout(() => {
+      if (!user) {
+        logger.warn("[WS] auth timeout, no auth message received")
+        ws.close(4001, "Unauthorized: No auth message")
+      }
+    }, 5_000)
 
     ws.on("message", async (raw: RawData) => {
       const rawStr = raw.toString()
 
       // Guard: message size. Measure bytes (not JS string length, which
       // under-counts multi-byte characters).
-      if (Buffer.byteLength(rawStr, "utf8") > MAX_MSG_BYTES) {
+      if (Buffer.byteLength(rawStr, "utf8") > 8 * 1024) {
         send(ws, "error", { message: "Message too large" })
         return
       }
@@ -299,36 +169,35 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
       try {
         msg = JSON.parse(rawStr)
       } catch (err) {
-        console.warn("[WS] failed to parse message:", (err as Error).message)
+        logger.warn("[WS] failed to parse message:", (err as Error).message)
         return
       }
 
       // Cap unauthenticated chatter — otherwise a client can flood messages for
       // the whole 5s auth window. NB: never log raw message bodies; the `auth`
       // message carries the JWT.
-      if (!extWs._authenticated) {
-        extWs._preAuthMsgCount = (extWs._preAuthMsgCount ?? 0) + 1
-        if (extWs._preAuthMsgCount > MAX_PREAUTH_MSGS) {
+      if (!user) {
+        preAuthMsgCount++
+        if (preAuthMsgCount > 10) {
           ws.close(4001, "Unauthorized: too many messages before auth")
           return
         }
       }
 
-      console.log("[WS] message type:", msg.type)
+      logger.info("[WS] message type:", msg.type)
 
-      // Handle auth message FIRST if not yet authenticated
-      if (!extWs._authenticated && msg.type === "auth") {
-        console.log("[WS] processing auth message")
-        if (extWs._authTimeout) clearTimeout(extWs._authTimeout)
+      if (!user && msg.type === "auth") {
+        logger.info("[WS] processing auth message")
+        clearTimeout(authTimeout)
 
         try {
           if (!msg.token) {
-            console.warn("[WS] auth message missing token")
+            logger.warn("[WS] auth message missing token")
             ws.close(4001, "Unauthorized: No token in auth message")
             return
           }
 
-          console.log("[WS] verifying JWT token")
+          logger.info("[WS] verifying JWT token")
           const payload = jwt.verify(
             msg.token,
             process.env.JWT_SECRET as string,
@@ -337,30 +206,40 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
             },
           ) as JwtPayload
 
-          const authedUser = await loadWsUser(payload.userId)
+          const found = await findUserForAuth(payload.userId)
 
-          if (!authedUser) {
-            console.warn("[WS] user not found for userId:", payload.userId)
+          if (!found) {
+            logger.warn("[WS] user not found for userId:", payload.userId)
             ws.close(4001, "Unauthorized: User not found")
             return
           }
 
-          if ((await getTokenVersion(payload.userId)) !== payload.tokenVersion) {
-            console.warn("[WS] revoked token for userId:", payload.userId)
+          if (found.tokenVersion !== payload.tokenVersion) {
+            logger.warn("[WS] revoked token for userId:", payload.userId)
             ws.close(4001, "Unauthorized: Token has been revoked")
             return
           }
 
-          user = authedUser
-          extWs._authenticated = true
+          user = { id: found.user.id, username: found.user.username }
           extWs._userId = user.id
 
-          console.log(`[WS] authenticated via message uid=${user.id}`)
+          logger.info(`[WS] authenticated via message uid=${user.id}`)
           send(ws, "auth_success", { userId: user.id })
 
-          setupAuthenticatedConnection(ws, extWs, user)
+          // Close any existing socket for this user (prevent zombie connections)
+          const existing = clients.get(user.id)
+          if (existing && existing.readyState === WebSocket.OPEN)
+            existing.close(1000, "Replaced by new connection")
+
+          clients.set(user.id, ws)
+          ws.on("pong", () => {
+            extWs._pongReceived = true
+          })
+          logger.info(
+            `[WS] connection ready uid=${user.id} (${user.username})`,
+          )
         } catch (err) {
-          console.error("[WS] auth failed:", err)
+          logger.error("[WS] auth failed:", err)
           if (err instanceof jwt.JsonWebTokenError) {
             ws.close(4001, `Unauthorized: ${err.message}`)
           } else {
@@ -370,33 +249,28 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
         return
       }
 
-      // All other messages require authentication
-      if (!extWs._authenticated) {
-        console.warn("[WS] message received before authentication:", msg.type)
+      // Copied to a const so it narrows to WsUser past this guard — TS won't
+      // narrow `user` itself, since the auth branch above reassigns it.
+      const authedUser = user
+      if (!authedUser) {
+        logger.warn("[WS] message received before authentication:", msg.type)
         send(ws, "error", { message: "Not authenticated" })
         return
       }
-      if (!user) {
-        send(ws, "error", { message: "Not authenticated" })
-        return
-      }
-
-      // TypeScript narrowing: user is guaranteed non-null here
-      const authenticatedUser = user as WsUser
 
       // Guard: rate limit per user. Not a fixed window — each message adds 1
       // to the count and schedules its own -1 after 1s, so this is a decaying
       // counter (effectively "no more than MAX_MSG_PER_SEC in-flight per
       // rolling second"), not a hard per-clock-second bucket.
-      const count = (msgCount.get(authenticatedUser.id) ?? 0) + 1
-      msgCount.set(authenticatedUser.id, count)
+      const count = (msgCount.get(authedUser.id) ?? 0) + 1
+      msgCount.set(authedUser.id, count)
       setTimeout(() => {
         msgCount.set(
-          authenticatedUser.id,
-          Math.max(0, (msgCount.get(authenticatedUser.id) ?? 1) - 1),
+          authedUser.id,
+          Math.max(0, (msgCount.get(authedUser.id) ?? 1) - 1),
         )
       }, 1000)
-      if (count > MAX_MSG_PER_SEC) {
+      if (count > 20) {
         send(ws, "error", { message: "Rate limit exceeded" })
         return
       }
@@ -404,13 +278,13 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
       try {
         switch (msg.type) {
           case "push_joint_progress":
-            await handlePushJointProgress(ws, authenticatedUser, msg)
+            await handlePushJointProgress(ws, authedUser, msg)
             break
           case "leave_joint_session":
-            await handleLeaveJointSession(ws, authenticatedUser, msg)
+            await handleLeaveJointSession(ws, authedUser, msg)
             break
           default:
-            console.warn(`[WS] unknown type: ${msg.type}`)
+            logger.warn(`[WS] unknown type: ${msg.type}`)
         }
       } catch (err) {
         send(ws, "error", { message: (err as Error).message })
@@ -425,12 +299,12 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
         clients.delete(user.id)
         msgCount.delete(user.id)
       }
-      if (extWs._authTimeout) clearTimeout(extWs._authTimeout)
-      console.log(`[WS] disconnected uid=${extWs._userId}`)
+      clearTimeout(authTimeout)
+      logger.info(`[WS] disconnected uid=${extWs._userId}`)
     })
 
     ws.on("error", (err: Error) =>
-      console.error(`[WS] error uid=${extWs._userId}:`, err.message),
+      logger.error(`[WS] error uid=${extWs._userId}:`, err.message),
     )
   })
 

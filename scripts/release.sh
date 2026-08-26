@@ -15,7 +15,9 @@ fi
 echo ""
 echo "[0/3] Version management..."
 
-CURRENT_VERSION=$(node -e "console.log(require('$SERVER_DIR/package.json').version)")
+cd "$SERVER_DIR"
+
+CURRENT_VERSION=$(node -e "console.log(require('./package.json').version)")
 AUTO_VERSION=$(node -e "const v='$CURRENT_VERSION'.split('.'); v[2]=parseInt(v[2])+1; console.log(v.join('.'))")
 
 echo "Current version: $CURRENT_VERSION"
@@ -40,13 +42,12 @@ echo "Updating version to: $NEW_VERSION"
 
 node -e "
 const fs = require('fs');
-const p = require('$SERVER_DIR/package.json');
+const p = require('./package.json');
 p.version = '$NEW_VERSION';
-fs.writeFileSync('$SERVER_DIR/package.json', JSON.stringify(p, null, 2) + '\n');
+fs.writeFileSync('./package.json', JSON.stringify(p, null, 2) + '\n');
 "
 
 echo "Version updated successfully!"
-
 # ─── [1/3] Push source to GitHub ─────────────────────────────────────────────
 echo ""
 echo "[1/3] Pushing source code to GitHub..."

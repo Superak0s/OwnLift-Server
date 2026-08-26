@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   day_number      INT             NOT NULL,
   day_title       VARCHAR(255)               DEFAULT NULL,
   muscle_groups   JSON                       DEFAULT NULL,   -- stored as JSON array
-  person          VARCHAR(128)               DEFAULT NULL,
+  `split`         VARCHAR(128)               DEFAULT NULL,
   start_time      DATETIME        NOT NULL,
   end_time        DATETIME                   DEFAULT NULL,
   total_duration  INT                        DEFAULT NULL,   -- seconds
@@ -139,7 +139,6 @@ CREATE TABLE IF NOT EXISTS supplements (
   default_amount              DECIMAL(8,2)    NOT NULL   DEFAULT 5.00,
   reminder_enabled            TINYINT(1)      NOT NULL   DEFAULT 0,
   reminder_time               TIME                       DEFAULT NULL,
-  location_reminder_enabled   TINYINT(1)      NOT NULL   DEFAULT 0,
   color                       VARCHAR(32)                DEFAULT NULL,
   icon                        VARCHAR(64)                DEFAULT NULL,
   created_at                  DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
@@ -165,44 +164,6 @@ CREATE TABLE IF NOT EXISTS supplement_log (
   KEY idx_sl_taken_at (taken_at),
   CONSTRAINT fk_sl_supplement FOREIGN KEY (supplement_id) REFERENCES supplements (id) ON DELETE CASCADE,
   CONSTRAINT fk_sl_user       FOREIGN KEY (user_id)       REFERENCES users        (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- -----------------------------------------------------------------------------
--- supplement_locations
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS supplement_locations (
-  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
-  supplement_id   INT UNSIGNED    NOT NULL,
-  user_id         INT UNSIGNED    NOT NULL,
-  latitude        DECIMAL(10,7)   NOT NULL,
-  longitude       DECIMAL(10,7)   NOT NULL,
-  address         VARCHAR(512)    NOT NULL,
-  radius          INT             NOT NULL   DEFAULT 100,   -- metres
-  enabled         TINYINT(1)      NOT NULL   DEFAULT 1,
-  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
-  updated_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_suploc_supplement (supplement_id),          -- one location per supplement
-  KEY idx_suploc_user (user_id),
-  CONSTRAINT fk_suploc_supplement FOREIGN KEY (supplement_id) REFERENCES supplements (id) ON DELETE CASCADE,
-  CONSTRAINT fk_suploc_user       FOREIGN KEY (user_id)       REFERENCES users        (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- -----------------------------------------------------------------------------
--- progress_photos
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS progress_photos (
-  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
-  user_id         INT UNSIGNED    NOT NULL,
-  photo_data      LONGBLOB        NOT NULL,
-  mime_type       VARCHAR(64)     NOT NULL   DEFAULT 'image/jpeg',
-  file_size       INT UNSIGNED    NOT NULL,
-  taken_at        DATETIME        NOT NULL,
-  note            TEXT                       DEFAULT NULL,
-  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  KEY idx_pp_user_taken (user_id, taken_at),
-  CONSTRAINT fk_pp_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- -----------------------------------------------------------------------------
@@ -238,21 +199,6 @@ CREATE TABLE IF NOT EXISTS macros_intake (
   PRIMARY KEY (id),
   KEY idx_mi_user_taken (user_id, taken_at),
   CONSTRAINT fk_mi_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- -----------------------------------------------------------------------------
--- protein_intake  (referenced in deleteUser cascade)
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS protein_intake (
-  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
-  user_id         INT UNSIGNED    NOT NULL,
-  grams           DECIMAL(6,2)    NOT NULL,
-  recorded_at     DATETIME        NOT NULL,
-  note            TEXT                       DEFAULT NULL,
-  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  KEY idx_pi_user (user_id),
-  CONSTRAINT fk_pi_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- -----------------------------------------------------------------------------
@@ -314,7 +260,6 @@ CREATE TABLE IF NOT EXISTS joint_session_participants (
   set_index         INT                        DEFAULT NULL,
   exercise_name     VARCHAR(255)               DEFAULT NULL,
   ready_for_next    TINYINT(1)    NOT NULL     DEFAULT 0,
-  selected_person   VARCHAR(128)               DEFAULT NULL,
   exercise_names    TEXT                       DEFAULT NULL,  -- JSON array
   last_updated      DATETIME                   DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -380,23 +325,6 @@ CREATE TABLE IF NOT EXISTS hydration_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- -----------------------------------------------------------------------------
--- sleep_log (sleep duration and quality)
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS sleep_log (
-  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
-  user_id         INT UNSIGNED    NOT NULL,
-  bedtime         DATETIME        NOT NULL,
-  wake_time       DATETIME        NOT NULL,
-  duration_hours  DECIMAL(4,2)               DEFAULT NULL,
-  quality         ENUM('poor','fair','good','excellent') DEFAULT 'good',
-  note            TEXT                       DEFAULT NULL,
-  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  KEY idx_sl_user_date (user_id, bedtime),
-  CONSTRAINT fk_sleep_log_user_id FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- -----------------------------------------------------------------------------
 -- muscle_soreness (DOMS) -- ADDED
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS muscle_soreness (
@@ -432,3 +360,234 @@ CREATE TABLE IF NOT EXISTS menstrual_cycle (
 
 -- -----------------------------------------------------------------------------
 --
+-- -----------------------------------------------------------------------------
+-- user_blocks
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_blocks (
+  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
+  blocker_id      INT UNSIGNED    NOT NULL,
+  blocked_id      INT UNSIGNED    NOT NULL,
+  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_block (blocker_id, blocked_id),
+  KEY idx_blk_blocked (blocked_id),
+  CONSTRAINT fk_blk_blocker FOREIGN KEY (blocker_id) REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_blk_blocked FOREIGN KEY (blocked_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- user_reports
+--
+-- Reports are instance-local: there is no central operator to escalate to, so
+-- they land here for whoever runs this server to review (ownlift reports).
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_reports (
+  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
+  reporter_id     INT UNSIGNED    NOT NULL,
+  reported_id     INT UNSIGNED    NOT NULL,
+  reason          ENUM('harassment','spam','impersonation','inappropriate','other') NOT NULL,
+  details         VARCHAR(1000)              DEFAULT NULL,
+  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_rep_reported (reported_id),
+  KEY idx_rep_created (created_at),
+  CONSTRAINT fk_rep_reporter FOREIGN KEY (reporter_id) REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_rep_reported FOREIGN KEY (reported_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+-- -----------------------------------------------------------------------------
+-- active_soreness
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS active_soreness (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id INT UNSIGNED NOT NULL,
+  muscle_group VARCHAR(128) NOT NULL,
+  intensity TINYINT NOT NULL,
+  notes TEXT DEFAULT NULL,
+  logged_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  recovered_at DATETIME DEFAULT NULL,
+  status ENUM('active','recovering','recovered') NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_as_user_status (user_id, status),
+  KEY idx_as_user_muscle (user_id, muscle_group),
+  CONSTRAINT fk_as_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- soreness_follow_up
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS soreness_follow_up (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  soreness_id INT UNSIGNED NOT NULL,
+  intensity TINYINT NOT NULL,
+  status ENUM('still_sore','better','recovered') NOT NULL,
+  notes TEXT DEFAULT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_sf_soreness (soreness_id),
+  CONSTRAINT fk_sf_soreness FOREIGN KEY (soreness_id) REFERENCES active_soreness (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- injuries
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS injuries (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id INT UNSIGNED NOT NULL,
+  muscle_group VARCHAR(128) NOT NULL,
+  injury_type ENUM('strain','sprain','tendonitis','fracture','dislocation','tear','overuse','surgery','other') NOT NULL,
+  pain_level TINYINT NOT NULL,
+  start_date DATETIME NOT NULL,
+  recovery_date DATETIME DEFAULT NULL,
+  notes TEXT DEFAULT NULL,
+  status ENUM('active','recovering','recovered') NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_inj_user_status (user_id, status),
+  KEY idx_inj_user_muscle (user_id, muscle_group),
+  CONSTRAINT fk_inj_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- progress_photos_muscle
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS progress_photos_muscle (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id INT UNSIGNED NOT NULL,
+  photo_data LONGBLOB NOT NULL,
+  mime_type VARCHAR(64) NOT NULL,
+  file_size INT UNSIGNED NOT NULL,
+  taken_at DATETIME NOT NULL,
+  notes TEXT DEFAULT NULL,
+  angle ENUM('front','back','side','custom') NOT NULL DEFAULT 'custom',
+  custom_side_name VARCHAR(255) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_ppm_user_taken (user_id, taken_at),
+  CONSTRAINT fk_ppm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- progress_photos_muscle_tags
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS progress_photos_muscle_tags (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  photo_id INT UNSIGNED NOT NULL,
+  muscle_group VARCHAR(128) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_ppmt_photo (photo_id),
+  KEY idx_ppmt_muscle (muscle_group),
+  CONSTRAINT fk_ppmt_photo FOREIGN KEY (photo_id) REFERENCES progress_photos_muscle (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- personal_muscle_notes
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS personal_muscle_notes (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id INT UNSIGNED NOT NULL,
+  muscle_group VARCHAR(128) NOT NULL,
+  content TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_pmn_user_muscle (user_id, muscle_group),
+  CONSTRAINT fk_pmn_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- hydration_settings -- per-user daily goal, one row per user
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS hydration_settings (
+  user_id                   INT UNSIGNED  NOT NULL,
+  goal_ml                   INT UNSIGNED  NOT NULL DEFAULT 2000,
+  measurement_error_percent DECIMAL(5,2)  NOT NULL DEFAULT 0,
+  updated_at                DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id),
+  CONSTRAINT fk_hs_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- menstrual_settings -- per-user cycle defaults, one row per user
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS menstrual_settings (
+  user_id           INT UNSIGNED  NOT NULL,
+  period_days       TINYINT UNSIGNED NOT NULL DEFAULT 5,
+  cycle_length_days TINYINT UNSIGNED NOT NULL DEFAULT 28,
+  updated_at        DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id),
+  CONSTRAINT fk_mset_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- menstrual_day_flow -- one flow reading per user per calendar day
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS menstrual_day_flow (
+  id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id     INT UNSIGNED NOT NULL,
+  date        DATE         NOT NULL,
+  intensity   ENUM('light','moderate','heavy') NOT NULL DEFAULT 'moderate',
+  note        TEXT                  DEFAULT NULL,
+  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_mdf_user_date (user_id, date),
+  CONSTRAINT fk_mdf_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- measurement_custom_types -- user-defined measurement kinds
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS measurement_custom_types (
+  id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id     INT UNSIGNED NOT NULL,
+  key_name    VARCHAR(128) NOT NULL,
+  label       VARCHAR(255) NOT NULL,
+  unit        VARCHAR(32)           DEFAULT NULL,
+  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_mct_user_key (user_id, key_name),
+  CONSTRAINT fk_mct_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- measurement_custom_values -- readings against a measurement_custom_types row
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS measurement_custom_values (
+  id          INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  user_id     INT UNSIGNED  NOT NULL,
+  type_id     INT UNSIGNED  NOT NULL,
+  value       DECIMAL(10,3) NOT NULL,
+  measured_at DATETIME      NOT NULL,
+  note        TEXT                   DEFAULT NULL,
+  created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_mcv_user_date (user_id, measured_at),
+  CONSTRAINT fk_mcv_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_mcv_type FOREIGN KEY (type_id) REFERENCES measurement_custom_types (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- -----------------------------------------------------------------------------
+-- progress_photos -- general body photos (distinct from progress_photos_muscle,
+-- which carries the muscle-tagged set). Served at /api/tracking/photos.
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS progress_photos (
+  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
+  user_id         INT UNSIGNED    NOT NULL,
+  photo_data      LONGBLOB        NOT NULL,
+  mime_type       VARCHAR(64)     NOT NULL   DEFAULT 'image/jpeg',
+  file_size       INT UNSIGNED    NOT NULL,
+  taken_at        DATETIME        NOT NULL,
+  note            TEXT                       DEFAULT NULL,
+  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_pp_user_taken (user_id, taken_at),
+  CONSTRAINT fk_pp_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

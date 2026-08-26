@@ -1,15 +1,12 @@
 // Injury tracking model
 
-import { pool } from "../../../config/database.js";
-import { query as dbQuery } from "../../../config/database.js";
-import type { RowDataPacket } from "mysql2";
-import type { InsertResult } from "../../../types/index.js";
-import { formatDateForMySQL } from "../../../utils/dateHelpers.js";
-import { ValidationError, NotFoundError } from "../../../middleware/errorHandler.js";
+import { pool, formatDateForMySQL } from "@/config/database.js";
+import type { RowDataPacket, ResultSetHeader } from "mysql2";
+import { ValidationError, NotFoundError } from "@/middleware/errorHandler.js";
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 
-export type InjuryType =
+type InjuryType =
   | "strain"
   | "sprain"
   | "tendonitis"
@@ -20,7 +17,7 @@ export type InjuryType =
   | "surgery"
   | "other";
 
-export type InjuryStatus = "active" | "recovering" | "recovered";
+type InjuryStatus = "active" | "recovering" | "recovered";
 
 const VALID_INJURY_TYPES: InjuryType[] = [
   "strain",
@@ -34,7 +31,8 @@ const VALID_INJURY_TYPES: InjuryType[] = [
   "other",
 ];
 
-export interface InjuryRecord {
+// Aliased to camelCase in SQL, so the query result is already the wire shape.
+interface InjuryRecord extends RowDataPacket {
   id: number;
   muscleGroup: string;
   injuryType: InjuryType;
@@ -47,20 +45,10 @@ export interface InjuryRecord {
   updatedAt: Date;
 }
 
-// ─── DB row shapes ────────────────────────────────────────────────────────────
-
-interface InjuryRow extends RowDataPacket {
-  id: number;
-  muscle_group: string;
-  injury_type: string;
-  pain_level: number;
-  start_date: Date;
-  recovery_date: Date | null;
-  notes: string | null;
-  status: string;
-  created_at: Date;
-  updated_at: Date;
-}
+const INJURY_COLS = `id, muscle_group AS muscleGroup, injury_type AS injuryType,
+       pain_level AS painLevel, start_date AS startDate,
+       recovery_date AS recoveryDate, notes, status,
+       created_at AS createdAt, updated_at AS updatedAt`;
 
 // ─── Queries ──────────────────────────────────────────────────────────────────
 
@@ -85,9 +73,7 @@ export async function logInjury(
   const startTs = formatDateForMySQL(startDate ? startDate : new Date());
   const now = formatDateForMySQL(new Date());
 
-  const [result] = await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >(
+  const [result] = await pool.execute<ResultSetHeader>(
     `INSERT INTO injuries (user_id, muscle_group, injury_type, pain_level, start_date, notes, status, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
     [
@@ -102,147 +88,49 @@ export async function logInjury(
     ],
   );
 
-  const id = (result as unknown as InsertResult).insertId;
+  const id = result.insertId;
   return getInjuryById(userId, id);
 }
 
-export async function getInjuryById(
+async function getInjuryById(
   userId: number,
   injuryId: number,
 ): Promise<InjuryRecord> {
-  const [rows] = await dbQuery<InjuryRow[]>(
-    `SELECT * FROM injuries WHERE id = ? AND user_id = ?`,
+  const [rows] = await pool.execute<InjuryRecord[]>(
+    `SELECT ${INJURY_COLS} FROM injuries WHERE id = ? AND user_id = ?`,
     [injuryId, userId],
   );
   if (!rows[0]) throw new NotFoundError("Injury");
-  return formatInjury(rows[0]);
-}
-
-export async function updateInjury(
-  userId: number,
-  injuryId: number,
-  updates: {
-    status?: InjuryStatus;
-    recoveryDate?: string;
-    notes?: string;
-    painLevel?: number;
-  },
-): Promise<InjuryRecord> {
-  // Verify injury exists
-  await getInjuryById(userId, injuryId);
-
-  const setClauses: string[] = [];
-  const params: (string | number | null)[] = [];
-
-  if (updates.status !== undefined) {
-    if (!["active", "recovering", "recovered"].includes(updates.status)) {
-      throw new ValidationError("Status must be 'active', 'recovering', or 'recovered'");
-    }
-    setClauses.push("status = ?");
-    params.push(updates.status);
-  }
-
-  if (updates.recoveryDate !== undefined) {
-    setClauses.push("recovery_date = ?");
-    params.push(
-      updates.recoveryDate ? formatDateForMySQL(updates.recoveryDate) : null,
-    );
-    if (!updates.status && updates.recoveryDate) {
-      setClauses.push("status = ?");
-      params.push("recovered");
-    }
-  }
-
-  if (updates.notes !== undefined) {
-    setClauses.push("notes = ?");
-    params.push(updates.notes ?? null);
-  }
-
-  if (updates.painLevel !== undefined) {
-    if (
-      !Number.isInteger(updates.painLevel) ||
-      updates.painLevel < 0 ||
-      updates.painLevel > 10
-    ) {
-      throw new ValidationError("Pain level must be an integer from 0-10");
-    }
-    setClauses.push("pain_level = ?");
-    params.push(updates.painLevel);
-  }
-
-  if (setClauses.length === 0) {
-    throw new ValidationError("No valid update fields provided");
-  }
-
-  setClauses.push("updated_at = ?");
-  params.push(formatDateForMySQL(new Date()));
-  params.push(injuryId);
-  params.push(userId);
-
-  await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >(
-    `UPDATE injuries SET ${setClauses.join(", ")} WHERE id = ? AND user_id = ?`,
-    params,
-  );
-
-  return getInjuryById(userId, injuryId);
+  return rows[0];
 }
 
 export async function getAllInjuries(
   userId: number,
 ): Promise<InjuryRecord[]> {
-  const [rows] = await dbQuery<InjuryRow[]>(
-    `SELECT * FROM injuries WHERE user_id = ? ORDER BY created_at DESC`,
+  const [rows] = await pool.execute<InjuryRecord[]>(
+    `SELECT ${INJURY_COLS} FROM injuries WHERE user_id = ? ORDER BY created_at DESC`,
     [userId],
   );
-  return rows.map(formatInjury);
+  return rows;
 }
 
 export async function getInjuriesByMuscle(
   userId: number,
   muscle: string,
 ): Promise<InjuryRecord[]> {
-  const [rows] = await dbQuery<InjuryRow[]>(
-    `SELECT * FROM injuries WHERE user_id = ? AND muscle_group = ? ORDER BY created_at DESC`,
+  const [rows] = await pool.execute<InjuryRecord[]>(
+    `SELECT ${INJURY_COLS} FROM injuries WHERE user_id = ? AND muscle_group = ? ORDER BY created_at DESC`,
     [userId, muscle],
   );
-  return rows.map(formatInjury);
+  return rows;
 }
 
 export async function getActiveInjuries(
   userId: number,
 ): Promise<InjuryRecord[]> {
-  const [rows] = await dbQuery<InjuryRow[]>(
-    `SELECT * FROM injuries WHERE user_id = ? AND status IN ('active', 'recovering') ORDER BY created_at DESC`,
+  const [rows] = await pool.execute<InjuryRecord[]>(
+    `SELECT ${INJURY_COLS} FROM injuries WHERE user_id = ? AND status IN ('active', 'recovering') ORDER BY created_at DESC`,
     [userId],
   );
-  return rows.map(formatInjury);
-}
-
-export async function deleteInjury(
-  userId: number,
-  injuryId: number,
-): Promise<boolean> {
-  const [result] = await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >(`DELETE FROM injuries WHERE id = ? AND user_id = ?`, [injuryId, userId]);
-  return (result as unknown as InsertResult).affectedRows > 0;
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatInjury(row: InjuryRow): InjuryRecord {
-  return {
-    id: row.id,
-    muscleGroup: row.muscle_group,
-    injuryType: row.injury_type as InjuryType,
-    painLevel: row.pain_level,
-    startDate: row.start_date,
-    recoveryDate: row.recovery_date,
-    notes: row.notes,
-    status: row.status as InjuryStatus,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+  return rows;
 }

@@ -1,9 +1,3 @@
-/**
- * types/social.ts
- * ─────────────────────────────────────────────────────────────────────────────
- * Friends, sharing permissions, and real-time joint-session shapes.
- */
-
 export interface Friend {
   friendship_id: number
   friends_since: Date
@@ -23,7 +17,7 @@ export interface FriendRequest {
   email: string
 }
 
-export type FriendshipStatus =
+type FriendshipStatus =
   | "friend"
   | "request_sent"
   | "request_received"
@@ -35,8 +29,6 @@ export interface UserSearchResult {
   name: string
   friendship_status: FriendshipStatus
 }
-
-// ─── Sharing / joint sessions ─────────────────────────────────────────────────
 
 export type PermissionType =
   | "history"
@@ -65,7 +57,6 @@ export interface JointSessionParticipant {
   setIndex: number | null
   exerciseName: string | null
   readyForNext: boolean
-  selectedPerson: string | null
   exerciseNames: string[] | null
   lastUpdated: Date
 }
@@ -82,6 +73,5 @@ export interface ParticipantProgress {
   setIndex?: number | null
   exerciseName?: string | null
   readyForNext?: boolean
-  selectedPerson?: string | null
   exerciseNames?: string[] | null
 }

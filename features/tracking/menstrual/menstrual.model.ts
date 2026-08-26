@@ -1,16 +1,11 @@
 // Track menstrual cycle phases and symptoms
 
-import { pool } from "../../../config/database.js"
-import { query as dbQuery } from "../../../config/database.js"
-import type { RowDataPacket } from "mysql2"
-import type { InsertResult } from "../../../types/index.js"
-import { formatDateForMySQL } from "../../../utils/dateHelpers.js"
-import { ValidationError } from "../../../middleware/errorHandler.js"
+import { pool, formatDateForMySQL } from "@/config/database.js"
+import type { RowDataPacket, ResultSetHeader } from "mysql2"
+import { ValidationError } from "@/middleware/errorHandler.js"
 import type { FlowIntensity } from "../tracking.types.js"
 
-export type { FlowIntensity }
-
-export interface MenstrualEntry {
+interface MenstrualEntry {
   id: number
   cycleStart: Date
   flowIntensity: FlowIntensity
@@ -19,13 +14,13 @@ export interface MenstrualEntry {
   updatedAt: Date
 }
 
-export interface CyclePhase {
+interface CyclePhase {
   phase: "menstruation" | "follicular" | "ovulation" | "luteal"
   daysInPhase: number
   estimatedEnd: Date
 }
 
-export interface CycleStats {
+interface CycleStats {
   currentPhase: CyclePhase | null
   averageCycleLength: number
   nextPeriodEstimate: Date | null
@@ -44,10 +39,6 @@ interface MenstrualRow extends RowDataPacket {
   symptoms: string | null
   created_at: Date
   updated_at: Date
-}
-
-interface AvgRow extends RowDataPacket {
-  avg_cycle_length: number | null
 }
 
 // ─── Queries ──────────────────────────────────────────────────────────────────
@@ -69,9 +60,7 @@ export async function logMenstrualCycle(
 
   const symptomsJson = symptoms ? JSON.stringify(symptoms) : null
 
-  const [result] = await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >(
+  const [result] = await pool.execute<ResultSetHeader>(
     `INSERT INTO menstrual_cycle (user_id, cycle_start, flow_intensity, symptoms)
      VALUES (?, ?, ?, ?)`,
     [
@@ -81,47 +70,14 @@ export async function logMenstrualCycle(
       symptomsJson,
     ],
   )
-  return (result as unknown as InsertResult).insertId
-}
-
-export async function endMenstrualCycle(
-  userId: number,
-  cycleId: number,
-  cycleEnd: string,
-): Promise<boolean> {
-  const [check] = await dbQuery<MenstrualRow[]>(
-    `SELECT cycle_start FROM menstrual_cycle WHERE id = ? AND user_id = ?`,
-    [cycleId, userId],
-  )
-  if (!check[0]) {
-    throw new ValidationError("Cycle not found")
-  }
-
-  const start = new Date(check[0].cycle_start)
-  const end = new Date(cycleEnd)
-
-  if (end <= start) {
-    throw new ValidationError("Cycle end must be after cycle start")
-  }
-
-  const durationDays = Math.floor(
-    (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
-  )
-
-  const [result] = await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >(
-    `UPDATE menstrual_cycle SET cycle_end = ?, duration_days = ? WHERE id = ? AND user_id = ?`,
-    [formatDateForMySQL(cycleEnd), durationDays, cycleId, userId],
-  )
-  return (result as unknown as InsertResult).affectedRows > 0
+  return result.insertId
 }
 
 export async function getMenstrualHistory(
   userId: number,
   limit = 12,
 ): Promise<MenstrualEntry[]> {
-  const [rows] = await dbQuery<MenstrualRow[]>(
+  const [rows] = await pool.execute<MenstrualRow[]>(
     `SELECT id, cycle_start, cycle_end, duration_days, flow_intensity, symptoms, created_at, updated_at
      FROM menstrual_cycle WHERE user_id = ? ORDER BY cycle_start DESC LIMIT ?`,
     [userId, limit],
@@ -129,10 +85,10 @@ export async function getMenstrualHistory(
   return rows.map(formatEntry)
 }
 
-export async function getLastMenstrualCycle(
+async function getLastMenstrualCycle(
   userId: number,
 ): Promise<MenstrualEntry | null> {
-  const [rows] = await dbQuery<MenstrualRow[]>(
+  const [rows] = await pool.execute<MenstrualRow[]>(
     `SELECT id, cycle_start, cycle_end, duration_days, flow_intensity, symptoms, created_at, updated_at
      FROM menstrual_cycle WHERE user_id = ? ORDER BY cycle_start DESC LIMIT 1`,
     [userId],
@@ -144,7 +100,7 @@ export async function getCycleStats(userId: number): Promise<CycleStats> {
   const last = await getLastMenstrualCycle(userId)
 
   // Calculate average cycle length from completed cycles
-  const [avgRows] = await dbQuery<AvgRow[]>(
+  const [avgRows] = await pool.execute<RowDataPacket[]>(
     `SELECT AVG(duration_days) AS avg_cycle_length FROM menstrual_cycle
      WHERE user_id = ? AND duration_days IS NOT NULL`,
     [userId],
@@ -216,7 +172,7 @@ export async function deleteMenstrualEntry(
   entryId: number,
 ): Promise<{ deleted: boolean; wasCycleStart: boolean }> {
   // Check whether this entry exists and whether it was a cycle start (i.e., cycle_start is set)
-  const [check] = await dbQuery<MenstrualRow[]>(
+  const [check] = await pool.execute<MenstrualRow[]>(
     `SELECT id, cycle_start FROM menstrual_cycle WHERE id = ? AND user_id = ?`,
     [entryId, userId],
   )
@@ -224,18 +180,16 @@ export async function deleteMenstrualEntry(
 
   const wasCycleStart = !!check[0].cycle_start
 
-  const [result] = await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >(
+  const [result] = await pool.execute<ResultSetHeader>(
     `DELETE FROM menstrual_cycle WHERE id = ? AND user_id = ?`,
     [entryId, userId],
   )
-  const deleted = (result as unknown as InsertResult).affectedRows > 0
+  const deleted = result.affectedRows > 0
   return { deleted, wasCycleStart }
 }
 
 // Menstrual settings stored per-user (period length, cycle length)
-export interface MenstrualSettings {
+interface MenstrualSettings {
   periodDays: number
   cycleLengthDays: number
   updatedAt: Date | null
@@ -244,7 +198,7 @@ export interface MenstrualSettings {
 export async function getMenstrualSettings(
   userId: number,
 ): Promise<MenstrualSettings> {
-  const [rows] = await dbQuery<RowDataPacket[]>(
+  const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT period_days, cycle_length_days, updated_at FROM menstrual_settings WHERE user_id = ?`,
     [userId],
   )

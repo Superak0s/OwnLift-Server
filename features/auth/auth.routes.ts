@@ -1,148 +1,109 @@
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth.js"
+import { authenticateToken } from "@/middleware/auth.js"
 import {
-  ConflictError,
+  ForbiddenError,
   UnauthorizedError,
   ValidationError,
-} from "../../middleware/errorHandler.js"
+} from "@/middleware/errorHandler.js"
 import {
   validateRegistration,
   validateLogin,
   validateRequired,
   validateProfileUpdate,
-} from "../../middleware/validation.js"
+  validatePasswordChange,
+} from "@/middleware/validation.js"
 import {
   createUser,
   findUserByCredentials,
   findUserById,
   verifyPassword,
   generateToken,
-  usernameExists,
-  emailExists,
-  emailTakenByOtherUser,
   getTokenVersion,
-  incrementTokenVersion,
+  deleteUserAccount,
+  changePassword,
 } from "./auth.model.js"
-import { updateUserProfile, deleteAllUserData } from "./user.model.js"
+import {
+  updateUserProfile,
+  deleteAllUserData,
+  exportUserData,
+} from "./user.model.js"
 
 const router: Router = Router()
 
-/**
- * POST /api/auth/signup
- */
-router.post(
-  "/signup",
-  validateRegistration,
-  async (req: Request, res: Response) => {
-    const { username, email, password, name } = req.body
+router.post("/signup", validateRegistration, async (req: Request, res: Response) => {
+  const { username, email, password, name } = req.body
+  const userId = await createUser(username, email, password, name)
+  const token = generateToken(userId, 0)
+  const user = await findUserById(userId)
 
-    if (await usernameExists(username)) {
-      throw new ConflictError("Username already taken")
-    }
-    if (await emailExists(email)) {
-      throw new ConflictError("Email already registered")
-    }
+  if (!user) throw new Error("Failed to create user")
 
-    const userId = await createUser(username, email, password, name)
-    const token = generateToken(userId, 0)
-    const user = await findUserById(userId)
+  res.status(201).json({
+    success: true,
+    message: "Account created successfully",
+    token,
+    user: {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      name: user.name,
+      is_admin: user.is_admin,
+      created_at: user.created_at,
+    },
+  })
+})
 
-    if (!user) throw new Error("Failed to create user")
+router.post("/signin", validateLogin, async (req: Request, res: Response) => {
+  const { username, password } = req.body
 
-    res.status(201).json({
+  const user = await findUserByCredentials(username)
+  if (!user) throw new UnauthorizedError("Invalid credentials")
+
+  const isValid = await verifyPassword(password, user.password_hash!)
+  if (!isValid) throw new UnauthorizedError("Invalid credentials")
+
+  const token = generateToken(user.id, await getTokenVersion(user.id))
+
+  res.json({
+    success: true,
+    message: "Signed in successfully",
+    token,
+    user: {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      name: user.name,
+      is_admin: user.is_admin,
+      created_at: user.created_at,
+    },
+  })
+})
+
+router.get("/me", authenticateToken, async (req: Request, res: Response) => {
+  res.json({ success: true, user: req.user })
+})
+
+router.put("/profile", authenticateToken, validateProfileUpdate, async (req: Request, res: Response) => {
+  const { name, email } = req.body
+  const updates: Record<string, string> = {}
+
+  if (name !== undefined) updates.name = name
+
+  if (email !== undefined) updates.email = email
+
+  if (Object.keys(updates).length === 0) {
+    return res.json({
       success: true,
-      message: "Account created successfully",
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        name: user.name,
-        is_admin: user.is_admin,
-        created_at: user.created_at,
-      },
+      message: "No changes provided",
+      user: req.user,
     })
-  },
-)
+  }
 
-/**
- * POST /api/auth/signin
- */
-router.post(
-  "/signin",
-  validateLogin,
-  async (req: Request, res: Response) => {
-    const { username, password } = req.body
+  await updateUserProfile(req.user!.id, updates)
+  const user = await findUserById(req.user!.id)
 
-    const user = await findUserByCredentials(username)
-    if (!user) throw new UnauthorizedError("Invalid credentials")
-
-    const isValid = await verifyPassword(password, user.password_hash!)
-    if (!isValid) throw new UnauthorizedError("Invalid credentials")
-
-    const token = generateToken(user.id, await getTokenVersion(user.id))
-
-    res.json({
-      success: true,
-      message: "Signed in successfully",
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        name: user.name,
-        is_admin: user.is_admin,
-        created_at: user.created_at,
-      },
-    })
-  },
-)
-
-/**
- * GET /api/auth/me
- */
-router.get(
-  "/me",
-  authenticateToken,
-  async (req: Request, res: Response) => {
-    res.json({ success: true, user: req.user })
-  },
-)
-
-/**
- * PUT /api/auth/profile
- */
-router.put(
-  "/profile",
-  authenticateToken,
-  validateProfileUpdate,
-  async (req: Request, res: Response) => {
-    const { name, email } = req.body
-    const updates: Record<string, string> = {}
-
-    if (name !== undefined) updates.name = name
-
-    if (email !== undefined) {
-      if (await emailTakenByOtherUser(email, req.user!.id)) {
-        throw new ConflictError("Email already in use")
-      }
-      updates.email = email
-    }
-
-    if (Object.keys(updates).length === 0) {
-      return res.json({
-        success: true,
-        message: "No changes provided",
-        user: req.user,
-      })
-    }
-
-    await updateUserProfile(req.user!.id, updates)
-    const user = await findUserById(req.user!.id)
-
-    res.json({ success: true, message: "Profile updated successfully", user })
-  },
-)
+  res.json({ success: true, message: "Profile updated successfully", user })
+})
 
 /**
  * DELETE /api/auth/account/data
@@ -151,22 +112,32 @@ router.put(
  * while keeping the account itself. Requires an explicit confirmation token
  * so it can't be triggered accidentally.
  */
-router.delete(
-  "/account/data",
-  authenticateToken,
-  validateRequired(["confirmDelete"]),
-  async (req: Request, res: Response) => {
-    if (req.body.confirmDelete !== "DELETE_ALL_DATA") {
-      throw new ValidationError(
-        'Must confirm deletion with confirmDelete: "DELETE_ALL_DATA"',
-      )
-    }
+router.delete("/account/data", authenticateToken, validateRequired(["confirmDelete"]), async (req: Request, res: Response) => {
+  if (req.body.confirmDelete !== "DELETE_ALL_DATA") {
+    throw new ValidationError(
+      'Must confirm deletion with confirmDelete: "DELETE_ALL_DATA"',
+    )
+  }
 
-    await deleteAllUserData(req.user!.id)
+  await deleteAllUserData(req.user!.id)
 
-    res.json({ success: true, message: "All data deleted successfully" })
-  },
-)
+  res.json({ success: true, message: "All data deleted successfully" })
+})
+
+/**
+ * DELETE /api/auth/account
+ *
+ * Permanently deletes the account and everything it owns. Re-checks the
+ * password because a stolen phone already has a valid token, and this is
+ * the one action nothing can undo.
+ */
+router.delete("/account", authenticateToken, validateRequired(["password"]), async (req: Request, res: Response) => {
+  if (!(await deleteUserAccount(req.user!.id, req.body.password))) {
+    // 403, not 401: the app treats every 401 as an expired session.
+    throw new ForbiddenError("Incorrect password")
+  }
+  res.json({ success: true, message: "Account deleted successfully" })
+})
 
 /**
  * POST /api/auth/refresh
@@ -179,32 +150,48 @@ router.delete(
  * server-side (e.g. in a `refresh_tokens` table), since a single JWT can't
  * authenticate itself once it's expired.
  */
-router.post(
-  "/refresh",
-  authenticateToken,
-  async (req: Request, res: Response) => {
-    const token = generateToken(
-      req.user!.id,
-      await getTokenVersion(req.user!.id),
-    )
-    res.json({ success: true, token })
-  },
-)
+router.post("/refresh", authenticateToken, async (req: Request, res: Response) => {
+  const token = generateToken(
+    req.user!.id,
+    await getTokenVersion(req.user!.id),
+  )
+  res.json({ success: true, token })
+})
 
 /**
- * POST /api/auth/logout-all
+ * PUT /api/auth/password
  *
- * Invalidates every JWT previously issued to this account (this request's
- * own token included) by bumping token_version. Use when a token may have
- * leaked, or for a "log out of all devices" action.
+ * changePassword bumps token_version, which invalidates every outstanding
+ * JWT — including the caller's. We hand back a freshly minted one so the
+ * device that made the change stays signed in and every other device is
+ * signed out, which is the point of changing a password.
  */
-router.post(
-  "/logout-all",
-  authenticateToken,
-  async (req: Request, res: Response) => {
-    await incrementTokenVersion(req.user!.id)
-    res.json({ success: true, message: "Logged out of all sessions" })
-  },
-)
+router.put("/password", authenticateToken, validatePasswordChange, async (req: Request, res: Response) => {
+  const { currentPassword, newPassword } = req.body
+
+  const user = await findUserByCredentials(req.user!.username)
+  if (!user || !(await verifyPassword(currentPassword, user.password_hash!))) {
+    // 403, not 401: the app treats every 401 as an expired session.
+    throw new ForbiddenError("Incorrect password")
+  }
+
+  await changePassword(req.user!.id, newPassword)
+
+  res.json({
+    success: true,
+    message: "Password changed successfully",
+    token: generateToken(req.user!.id, await getTokenVersion(req.user!.id)),
+  })
+})
+
+/**
+ * GET /api/auth/account/export
+ *
+ * Everything this server holds about the caller, as JSON. Progress photo
+ * bytes are omitted (metadata only) — see exportUserData.
+ */
+router.get("/account/export", authenticateToken, async (req: Request, res: Response) => {
+  res.json({ success: true, data: await exportUserData(req.user!.id) })
+})
 
 export default router

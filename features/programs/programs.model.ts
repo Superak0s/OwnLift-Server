@@ -1,39 +1,37 @@
 // Single canonical implementation. All mutations go through
-// loadProgram / saveProgram / requireDay / requirePersonWorkout.
+// loadProgram / saveProgram / requireDay / requireSplitWorkout.
 
-import { pool } from "../../config/database.js"
-import { query as dbQuery } from "../../config/database.js"
-import type { RowDataPacket } from "mysql2"
-import type { InsertResult } from "../../types/index.js"
-import { NotFoundError, ValidationError } from "../../middleware/errorHandler.js"
+import { pool } from "@/config/database.js"
+import type { RowDataPacket, ResultSetHeader } from "mysql2"
+import { NotFoundError, ValidationError } from "@/middleware/errorHandler.js"
 import type {
   Exercise,
-  PersonWorkout,
+  SplitWorkout,
   ProgramDay,
   ProgramData,
   StoredProgram,
 } from "./programs.types.js"
 
-export type { Exercise, PersonWorkout, ProgramDay, ProgramData, StoredProgram }
-
-// ─── DB row shapes ────────────────────────────────────────────────────────────
-
-interface ProgramRow extends RowDataPacket {
-  program_data: string
-  original_filename: string
-  uploaded_at: Date
-}
-
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-
 function parseProgramData(raw: string, userId: number): ProgramData {
   try {
-    return JSON.parse(raw) as ProgramData
+    return normalizeProgram(JSON.parse(raw) as ProgramData)
   } catch {
     throw new Error(
       `Corrupt program data for user ${userId} — please re-upload your workout file`,
     )
   }
+}
+
+// Stored programs omit exerciseId entirely. Normalise on both store and read
+// so an unmatched exercise always reads back as exerciseId: null rather than
+// absent.
+export function normalizeProgram(programData: ProgramData): ProgramData {
+  for (const day of programData.days ?? []) {
+    for (const ex of day.exercises ?? []) ex.exerciseId = ex.exerciseId ?? null
+    for (const sw of Object.values(day.split ?? {}))
+      for (const ex of sw.exercises ?? []) ex.exerciseId = ex.exerciseId ?? null
+  }
+  return programData
 }
 
 function requireDay(programData: ProgramData, dayNumber: number): ProgramDay {
@@ -42,12 +40,12 @@ function requireDay(programData: ProgramData, dayNumber: number): ProgramDay {
   return day
 }
 
-function requirePersonWorkout(
+function requireSplitWorkout(
   day: ProgramDay,
-  person: string,
+  split: string,
   exerciseIndex: number,
-): PersonWorkout {
-  const pw = day.split?.[person]
+): SplitWorkout {
+  const pw = day.split?.[split]
   if (!pw?.exercises?.[exerciseIndex]) throw new NotFoundError("Exercise")
   return pw
 }
@@ -72,12 +70,10 @@ async function saveProgram(
   )
 }
 
-// ─── DB primitives ────────────────────────────────────────────────────────────
-
 export async function getProgramByUserId(
   userId: number,
 ): Promise<StoredProgram | null> {
-  const [rows] = await dbQuery<ProgramRow[]>(
+  const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT program_data, original_filename, uploaded_at FROM workout_programs WHERE user_id = ? ORDER BY uploaded_at DESC LIMIT 1`,
     [userId],
   )
@@ -94,6 +90,7 @@ export async function upsertProgram(
   programData: ProgramData,
   originalFilename: string,
 ): Promise<void> {
+  normalizeProgram(programData)
   await pool.execute(
     `INSERT INTO workout_programs (user_id, program_data, original_filename, uploaded_at)
      VALUES (?, ?, ?, NOW())
@@ -103,32 +100,32 @@ export async function upsertProgram(
 }
 
 export async function deleteProgramByUserId(userId: number): Promise<boolean> {
-  const [result] = await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >("DELETE FROM workout_programs WHERE user_id = ?", [userId])
-  return (result as unknown as InsertResult).affectedRows > 0
+  const [result] = await pool.execute<ResultSetHeader>("DELETE FROM workout_programs WHERE user_id = ?", [userId])
+  return result.affectedRows > 0
 }
-
-// ─── Mutations ────────────────────────────────────────────────────────────────
 
 export async function renameExercise(
   userId: number,
   dayNumber: number,
-  person: string,
+  split: string,
   exerciseIndex: number,
   newName: string,
   newMuscleGroup?: string,
+  newExerciseId?: string | null,
 ): Promise<{ oldName: string; newName: string; exerciseIndex: number }> {
   const { programData, originalFilename } = await loadProgram(userId)
-  const pw = requirePersonWorkout(
+  const pw = requireSplitWorkout(
     requireDay(programData, dayNumber),
-    person,
+    split,
     exerciseIndex,
   )
   const oldName = pw.exercises[exerciseIndex].name
   pw.exercises[exerciseIndex].name = newName.trim()
   if (newMuscleGroup !== undefined)
     pw.exercises[exerciseIndex].muscleGroup = newMuscleGroup
+  // Explicit null is how a matched exercise is turned back into a custom one.
+  if (newExerciseId !== undefined)
+    pw.exercises[exerciseIndex].exerciseId = newExerciseId?.trim() || null
   await saveProgram(userId, programData, originalFilename)
   return { oldName, newName: newName.trim(), exerciseIndex }
 }
@@ -136,14 +133,19 @@ export async function renameExercise(
 export async function addExercise(
   userId: number,
   dayNumber: number,
-  person: string,
-  exercise: { name?: string; muscleGroup?: string; sets?: number },
+  split: string,
+  exercise: {
+    name?: string
+    muscleGroup?: string
+    sets?: number
+    exerciseId?: string | null
+  },
 ): Promise<{ exerciseIndex: number; exercise: Exercise }> {
   if (!exercise?.name || !exercise?.sets)
     throw new ValidationError("Exercise name and sets are required")
   const { programData, originalFilename } = await loadProgram(userId)
   const day = requireDay(programData, dayNumber)
-  if (!day.split[person]) day.split[person] = { exercises: [], totalSets: 0 }
+  if (!day.split[split]) day.split[split] = { exercises: [], totalSets: 0 }
 
   const sets = parseInt(String(exercise.sets))
   if (isNaN(sets)) throw new ValidationError("sets must be a number")
@@ -152,15 +154,16 @@ export async function addExercise(
     name: exercise.name.trim(),
     muscleGroup: exercise.muscleGroup?.trim() || "",
     sets,
+    exerciseId: exercise.exerciseId?.trim() || null,
   }
-  day.split[person].exercises.push(newExercise)
-  day.split[person].totalSets =
-    (day.split[person].totalSets || 0) + newExercise.sets
-  if (!programData.split.includes(person)) programData.split.push(person)
+  day.split[split].exercises.push(newExercise)
+  day.split[split].totalSets =
+    (day.split[split].totalSets || 0) + newExercise.sets
+  if (!programData.split.includes(split)) programData.split.push(split)
 
   await saveProgram(userId, programData, originalFilename)
   return {
-    exerciseIndex: day.split[person].exercises.length - 1,
+    exerciseIndex: day.split[split].exercises.length - 1,
     exercise: newExercise,
   }
 }
@@ -168,14 +171,14 @@ export async function addExercise(
 export async function patchExerciseSets(
   userId: number,
   dayNumber: number,
-  person: string,
+  split: string,
   exerciseIndex: number,
   additionalSets: number,
 ): Promise<{ exerciseIndex: number; newSetCount: number }> {
   const { programData, originalFilename } = await loadProgram(userId)
-  const pw = requirePersonWorkout(
+  const pw = requireSplitWorkout(
     requireDay(programData, dayNumber),
-    person,
+    split,
     exerciseIndex,
   )
   const added = parseInt(String(additionalSets))

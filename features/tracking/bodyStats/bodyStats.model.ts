@@ -1,46 +1,6 @@
-// Body composition: weight tracking, body fat calculations & history.
-// Height and weight-unit helpers are owned by user.model.ts and re-exported here.
-
-import { pool } from "../../../config/database.js"
-import { query as dbQuery } from "../../../config/database.js"
+import { pool, formatDateForMySQL } from "@/config/database.js"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
-import type { InsertResult } from "../../../types/index.js"
-import { formatDateForMySQL } from "../../../utils/dateHelpers.js"
-import type {
-  WeightEntry,
-  WeightStats,
-  BodyFatEntry,
-  BodyFatTrend,
-  BodyFatTrendDirection,
-} from "../tracking.types.js"
-
-export type { WeightEntry, WeightStats, BodyFatEntry, BodyFatTrend }
-
-// Re-export height / weight-unit helpers from their canonical module
-export {
-  setUserHeight as setHeight,
-  getUserHeight as getHeight,
-  setWeightUnit,
-  getWeightUnit,
-} from "../../auth/user.model.js"
-
-// ─── DB row shapes ────────────────────────────────────────────────────────────
-
-interface WeightEntryRow extends RowDataPacket {
-  id: number
-  weight_kg: number
-  recorded_at: Date
-  note: string | null
-  created_at: Date
-}
-
-interface WeightStatsRow extends RowDataPacket {
-  min_weight: number | null
-  max_weight: number | null
-  avg_weight: number | null
-  entry_count: number
-}
-
+import type { WeightEntry, BodyFatEntry } from "../tracking.types.js"
 interface BodyFatRow extends RowDataPacket {
   id: number
   percentage: number
@@ -54,8 +14,6 @@ interface BodyFatRow extends RowDataPacket {
 }
 
 
-// ─── Body weight ──────────────────────────────────────────────────────────────
-
 export async function logWeight(
   userId: number,
   weightKg: number,
@@ -63,20 +21,18 @@ export async function logWeight(
   note?: string | null,
 ): Promise<number> {
   const ts = formatDateForMySQL(recordedAt ? recordedAt : new Date())
-  const [result] = await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >(
+  const [result] = await pool.execute<ResultSetHeader>(
     `INSERT INTO body_weight (user_id, weight_kg, recorded_at, note) VALUES (?, ?, ?, ?)`,
     [userId, weightKg, ts, note ?? null],
   )
-  return (result as unknown as InsertResult).insertId
+  return result.insertId
 }
 
 export async function getWeightHistory(
   userId: number,
   limit = 90,
 ): Promise<WeightEntry[]> {
-  const [rows] = await dbQuery<WeightEntryRow[]>(
+  const [rows] = await pool.execute<(WeightEntry & RowDataPacket)[]>(
     `SELECT id, weight_kg, recorded_at, note, created_at FROM body_weight WHERE user_id = ? ORDER BY recorded_at DESC LIMIT ?`,
     [userId, limit],
   )
@@ -87,42 +43,18 @@ export async function deleteWeightEntry(
   userId: number,
   entryId: number,
 ): Promise<boolean> {
-  const [result] = await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >(`DELETE FROM body_weight WHERE id = ? AND user_id = ?`, [entryId, userId])
-  return (result as unknown as InsertResult).affectedRows > 0
+  const [result] = await pool.execute<ResultSetHeader>(`DELETE FROM body_weight WHERE id = ? AND user_id = ?`, [entryId, userId])
+  return result.affectedRows > 0
 }
 
 export async function getCurrentWeight(
   userId: number,
 ): Promise<Pick<WeightEntry, "weight_kg" | "recorded_at"> | null> {
-  const [rows] = await dbQuery<WeightEntryRow[]>(
+  const [rows] = await pool.execute<(Pick<WeightEntry, "weight_kg" | "recorded_at"> & RowDataPacket)[]>(
     `SELECT weight_kg, recorded_at FROM body_weight WHERE user_id = ? ORDER BY recorded_at DESC LIMIT 1`,
     [userId],
   )
   return rows[0] ?? null
-}
-
-export async function getWeightStats(
-  userId: number,
-  days = 30,
-): Promise<WeightStats> {
-  const [rows] = await dbQuery<WeightStatsRow[]>(
-    `SELECT MIN(weight_kg) AS min_weight, MAX(weight_kg) AS max_weight, AVG(weight_kg) AS avg_weight, COUNT(*) AS entry_count
-     FROM body_weight WHERE user_id = ? AND recorded_at >= DATE_SUB(NOW(), INTERVAL ? DAY)`,
-    [userId, days],
-  )
-  const stats = rows[0]
-  const current = await getCurrentWeight(userId)
-  return {
-    minWeight: stats.min_weight,
-    maxWeight: stats.max_weight,
-    avgWeight: stats.avg_weight,
-    currentWeight: current?.weight_kg ?? null,
-    entryCount: stats.entry_count,
-    change:
-      current && stats.min_weight ? current.weight_kg - stats.min_weight : null,
-  }
 }
 
 // ─── Body fat percentage (US Navy formula) ────────────────────────────────────
@@ -175,9 +107,7 @@ export async function logBodyFat(
   gender: string,
   calculatedAt: string | Date,
 ): Promise<BodyFatEntry> {
-  const [result] = await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >(
+  const [result] = await pool.execute<ResultSetHeader>(
     `INSERT INTO body_fat_measurements (user_id, percentage, waist_cm, neck_cm, hip_cm, height_cm, gender, method, calculated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'us_navy', ?)`,
     [
@@ -193,7 +123,7 @@ export async function logBodyFat(
   )
   const [rows] = await pool.execute<BodyFatRow[]>(
     "SELECT * FROM body_fat_measurements WHERE id = ?",
-    [(result as unknown as InsertResult).insertId],
+    [result.insertId],
   )
   return formatEntry(rows[0])
 }
@@ -207,16 +137,6 @@ export async function getBodyFatHistory(
     [userId, limit],
   )
   return rows.map(formatEntry)
-}
-
-export async function getLatestBodyFat(
-  userId: number,
-): Promise<BodyFatEntry | null> {
-  const [rows] = await pool.execute<BodyFatRow[]>(
-    `SELECT * FROM body_fat_measurements WHERE user_id = ? ORDER BY calculated_at DESC LIMIT 1`,
-    [userId],
-  )
-  return rows[0] ? formatEntry(rows[0]) : null
 }
 
 export async function deleteBodyFatEntry(
@@ -234,75 +154,6 @@ export async function deleteBodyFatEntry(
   )
   return (result as ResultSetHeader).affectedRows > 0
 }
-
-export async function getUserBodyData(
-  userId: number,
-): Promise<{ heightCm: number | null; gender: "male" | "female" } | null> {
-  const [rows] = await pool.execute<any[]>(
-    "SELECT height_cm, gender FROM users WHERE id = ?",
-    [userId],
-  )
-  if (!rows[0]) return null
-  return {
-    heightCm: rows[0].height_cm ? parseFloat(rows[0].height_cm) : null,
-    gender: rows[0].gender || "male",
-  }
-}
-
-interface BodyFatTrendRow extends RowDataPacket {
-  percentage: number
-  calculated_at: Date
-}
-
-export async function getBodyFatTrend(
-  userId: number,
-  days = 90,
-): Promise<BodyFatTrend> {
-  const [entries] = await pool.execute<BodyFatTrendRow[]>(
-    `SELECT percentage, calculated_at FROM body_fat_measurements
-     WHERE user_id = ? AND calculated_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-     ORDER BY calculated_at ASC`,
-    [userId, days],
-  )
-  const data = entries.map((e) => ({
-    percentage: e.percentage,
-    date: e.calculated_at,
-  }))
-  if (entries.length < 2)
-    return { trend: "insufficient_data", entries: entries.length, data }
-
-  const first = entries[0].percentage
-  const last = entries[entries.length - 1].percentage
-  const change = last - first
-  const changePercent = (change / first) * 100
-  const daysDiff =
-    (new Date(entries[entries.length - 1].calculated_at).getTime() -
-      new Date(entries[0].calculated_at).getTime()) /
-    (1000 * 60 * 60 * 24)
-  const changePerWeek = daysDiff > 0 ? change / (daysDiff / 7) : 0
-  const direction: BodyFatTrendDirection =
-    Math.abs(changePercent) < 2
-      ? "stable"
-      : change < 0
-        ? "decreasing"
-        : "increasing"
-
-  return {
-    trend: {
-      direction,
-      totalChange: change,
-      totalChangePercent: changePercent,
-      changePerWeek,
-      firstMeasurement: first,
-      lastMeasurement: last,
-      measurements: entries.length,
-      timeSpan: daysDiff,
-    },
-    data,
-  }
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatEntry(e: BodyFatRow): BodyFatEntry {
   return {

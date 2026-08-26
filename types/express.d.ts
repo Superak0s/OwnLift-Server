@@ -1,5 +1,4 @@
-// src/types/express.d.ts
-import type { AuthUser } from "./index.js"
+import type { AuthUser } from "../features/auth/user.types.js"
 
 export {}
 

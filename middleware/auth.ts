@@ -1,9 +1,8 @@
-// src/middleware/auth.ts
 import { Request, Response, NextFunction } from "express"
 import jwt from "jsonwebtoken"
-import { findUserById, getTokenVersion } from "../features/auth/auth.model.js"
+import { findUserForAuth } from "../features/auth/auth.model.js"
 import { UnauthorizedError } from "./errorHandler.js"
-import type { JwtPayload } from "../types/index.js"
+import type { JwtPayload } from "../features/auth/auth.types.js"
 
 function extractToken(req: Request): string | null {
   const header = req.headers["authorization"]
@@ -24,11 +23,11 @@ export async function authenticateToken(
       process.env.JWT_SECRET!,
       { algorithms: ["HS256"] },
     ) as JwtPayload
-    const user = await findUserById(userId)
-    if (!user) return next(new UnauthorizedError("User not found"))
-    if ((await getTokenVersion(userId)) !== tokenVersion)
+    const found = await findUserForAuth(userId)
+    if (!found) return next(new UnauthorizedError("User not found"))
+    if (found.tokenVersion !== tokenVersion)
       return next(new UnauthorizedError("Token has been revoked"))
-    req.user = user
+    req.user = found.user
     next()
   } catch (err) {
     if (err instanceof jwt.JsonWebTokenError) {

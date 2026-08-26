@@ -1,14 +1,13 @@
 {
   "name": "ownlift-server",
-  "version": "1.0.0",
+  "version": "0.1.1",
   "description": "Node.js server for processing workout files and splitting exercises by day",
   "main": "server.js",
   "scripts": {
-    "build": "tsc && cp config/schema.sql dist/config/schema.sql && cp -r migrations dist/migrations",
-    "dev": "tsx watch server.ts",
-    "start": "node dist/server.js",
-    "ownlift": "tsx ownlift.ts",
-    "sonar:scan": "node -e \"const{execFileSync}=require('child_process');execFileSync('npx',['@sonar/scan','-Dsonar.host.url='+(process.env.SONAR_HOST_URL||'http://localhost:9000'),'-Dsonar.token='+process.env.SONAR_TOKEN,'-Dsonar.projectKey=OwnLift-Server','-Dsonar.analysisCache.enabled=false'],{stdio:'inherit'})\""
+    "build": "tsc && tsc-alias && cp config/schema.sql dist/config/schema.sql && cp -r migrations dist/migrations",
+    "dev": "tsx watch --env-file-if-exists=.env server.ts",
+    "start": "node --env-file-if-exists=.env dist/server.js",
+    "ownlift": "tsx --env-file-if-exists=.env ownlift.ts"
   },
   "keywords": [
     "workout",
@@ -22,9 +21,8 @@
   "license": "MIT",
   "dependencies": {
     "bcryptjs": "^3.0.3",
-    "compression": "^1.8.1",
+    "bonjour-service": "^1.4.4",
     "cors": "^2.8.6",
-    "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
     "helmet": "^8.3.0",
@@ -34,13 +32,13 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
-    "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.2.0",
     "@types/node": "^24.13.3",
     "@types/ws": "^8.18.1",
+    "tsc-alias": "^1.9.2",
     "tsx": "^4.23.11",
     "typescript": "^6.0.3"
   }

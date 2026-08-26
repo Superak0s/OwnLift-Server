@@ -1,16 +1,15 @@
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../middleware/auth.js"
+import { authenticateToken } from "@/middleware/auth.js"
+import { ForbiddenError, ValidationError } from "@/middleware/errorHandler.js"
 import {
-  ForbiddenError,
-  ValidationError,
-} from "../../middleware/errorHandler.js"
-import {
+  parseIntParam,
+  validateRequired,
   validateSessionCreation,
   validateSetTiming,
-  validateSetTimingUpdate,
-} from "../../middleware/validation.js"
-import { pool } from "../../config/database.js"
-import { notifyWatcher, sendToUser } from "../../ws/wsServer.js"
+} from "@/middleware/validation.js"
+import { pool } from "@/config/database.js"
+import { logger } from "@/utils/logger.js"
+import { sendToUser } from "@/ws/wsServer.js"
 import {
   createSession,
   recordSetTiming,
@@ -20,23 +19,15 @@ import {
   getSessionDetails,
   getSessionHistory,
   clearAdminSessions,
-  deleteAllSessionsForPerson,
-  updateSessionPerson,
+  deleteAllSessionsForSplit,
+  updateSessionSplit,
 } from "./workouts.model.js"
 import { getFriendSessionDetails } from "../social/sharing/sharing.model.js"
 
 const router: Router = Router()
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+router.use(authenticateToken)
 
-/** Parse a route/query param as a positive integer. Returns null on failure. */
-function parseId(value: string | undefined): number | null {
-  if (!value) return null
-  const n = parseInt(value, 10)
-  return isNaN(n) || n < 1 ? null : n
-}
-
-/** Verify the session exists and belongs to the caller. Returns the row or throws. */
 async function requireOwnSession(
   sessionId: number,
   userId: number,
@@ -50,258 +41,182 @@ async function requireOwnSession(
   return rows[0]
 }
 
-// ─── Routes ───────────────────────────────────────────────────────────────────
+router.get("/", async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const { split, dayNumber, limit, includeTimings } = req.query
 
-/**
- * GET /api/sessions
- */
-router.get(
-  "/",
-  authenticateToken,
-  async (req: Request, res: Response) => {
-    const userId = req.user!.id
-    const { person, dayNumber, limit, includeTimings } = req.query
+  const sessions = await getSessionHistory(
+    userId,
+    (split as string) || null,
+    dayNumber ? parseInt(dayNumber as string, 10) : null,
+    limit ? parseInt(limit as string, 10) : 30,
+    includeTimings === "true",
+  )
 
-    const sessions = await getSessionHistory(
+  res.json({ success: true, sessions, total: sessions.length })
+})
+
+router.post("/start", validateSessionCreation, async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const { dayNumber, dayTitle, muscleGroups, isAdmin } = req.body
+  const split = req.body.split
+
+  const newSessionId: number = await createSession(
+    userId,
+    dayNumber,
+    dayTitle,
+    muscleGroups,
+    isAdmin || false,
+    req.body.startTime || null,
+  )
+
+  if (split) {
+    await updateSessionSplit(newSessionId, userId, split)
+  }
+
+  const session = await getSessionDetails(newSessionId, userId)
+
+  if (!isAdmin) {
+    pushSessionStatusToWatchers(
       userId,
-      (person as string) || null,
-      dayNumber ? parseInt(dayNumber as string, 10) : null,
-      limit ? parseInt(limit as string, 10) : 30,
-      includeTimings === "true",
+      req.user!.username,
+      newSessionId,
+      "friend_session_started",
     )
+  }
 
-    res.json({ success: true, sessions, total: sessions.length })
-  },
-)
-
-/**
- * POST /api/sessions/start
- */
-router.post(
-  "/start",
-  authenticateToken,
-  validateSessionCreation,
-  async (req: Request, res: Response) => {
-    const userId = req.user!.id
-    const { person, dayNumber, dayTitle, muscleGroups, isAdmin } = req.body
-
-    const newSessionId: number = await createSession(
-      userId,
-      dayNumber,
-      dayTitle,
-      muscleGroups,
-      isAdmin || false,
-      req.body.startTime || null,
-    )
-
-    if (person) {
-      await updateSessionPerson(newSessionId, userId, person)
-    }
-
-    const session = await getSessionDetails(newSessionId, userId)
-
-    if (!isAdmin) {
-      pushSessionStatusToWatchers(
-        userId,
-        req.user!.username,
-        newSessionId,
-        "friend_session_started",
-      )
-    }
-
-    res.json({ success: true, session: { ...session, id: newSessionId } })
-  },
-)
+  res.json({ success: true, session: { ...session, id: newSessionId } })
+})
 
 /**
  * POST /api/sessions/rename-exercise
  *
- * Rename / re-group an exercise everywhere it appears in a person's session
+ * Rename / re-group an exercise everywhere it appears in a split's session
  * history. Static path — declared before the dynamic /:sessionId routes.
  */
-router.post(
-  "/rename-exercise",
-  authenticateToken,
-  async (req: Request, res: Response) => {
-    const userId = req.user!.id
-    const { person, oldName, newName, muscleGroup } = req.body
+router.post("/rename-exercise", async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const { oldName, newName, muscleGroup } = req.body
+  const split = req.body.split
 
-    if (!person || typeof oldName !== "string" || !oldName.trim()) {
-      throw new ValidationError("person and oldName are required")
-    }
+  if (!split || typeof oldName !== "string" || !oldName.trim()) {
+    throw new ValidationError("split and oldName are required")
+  }
 
-    const updatedCount = await renameExerciseInHistory(
+  const updatedCount = await renameExerciseInHistory(
+    userId,
+    split,
+    oldName.trim(),
+    newName,
+    muscleGroup,
+  )
+  res.json({ success: true, updatedCount })
+})
+
+router.post("/:sessionId/set", validateRequired(["exerciseName", "setIndex", "startTime", "endTime"]), validateSetTiming, async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const sessionId = parseIntParam(String(req.params.sessionId), "session ID")
+
+  // exerciseName is already required by validateRequired and shape-checked
+  // by validateSetTiming, both mounted on this route.
+  const {
+    exerciseName,
+    setIndex,
+    startTime,
+    endTime,
+    weight,
+    reps,
+    note,
+    isWarmup,
+    muscleGroup,
+  } = req.body
+
+  await requireOwnSession(sessionId, userId)
+
+  const timing = await recordSetTiming(
+    sessionId,
+    exerciseName.trim(),
+    setIndex,
+    startTime,
+    endTime,
+    weight || 0,
+    reps || 0,
+    note || null,
+    isWarmup || false,
+    muscleGroup || null,
+  )
+
+  pushLiveUpdateToWatchers(userId, sessionId).catch((err: Error) =>
+    logger.warn("[WS] live update push failed:", err.message),
+  )
+
+  res.json({ success: true, timing })
+})
+
+router.patch("/:sessionId/sets/:setId", validateSetTiming, async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const sessionId = parseIntParam(String(req.params.sessionId), "session ID")
+  const setId = parseIntParam(String(req.params.setId), "set ID")
+
+  const timing = await updateSetTiming(sessionId, setId, userId, req.body)
+  res.json({ success: true, timing })
+})
+
+router.post("/:sessionId/end", async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const sessionId = parseIntParam(String(req.params.sessionId), "session ID")
+
+  const row = await requireOwnSession(sessionId, userId)
+  const session = await endSession(sessionId, req.body.endTime || null)
+
+  if (!row.is_admin) {
+    pushSessionStatusToWatchers(
       userId,
-      person,
-      oldName.trim(),
-      newName,
-      muscleGroup,
+      req.user!.username,
+      null,
+      "friend_session_ended",
     )
-    res.json({ success: true, updatedCount })
-  },
-)
+  }
 
-/**
- * POST /api/sessions/:sessionId/set
- */
-router.post(
-  "/:sessionId/set",
-  authenticateToken,
-  validateSetTiming,
-  async (req: Request, res: Response) => {
-    const userId = req.user!.id
-    const sessionId = parseId(String(req.params.sessionId))
-    if (sessionId === null) throw new ValidationError("Invalid session ID")
+  res.json({ success: true, session })
+})
 
-    const {
-      exerciseName,
-      setIndex,
-      startTime,
-      endTime,
-      weight,
-      reps,
-      note,
-      isWarmup,
-      muscleGroup,
-    } = req.body
+router.get("/:sessionId", async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const sessionId = parseIntParam(String(req.params.sessionId), "session ID")
 
-    if (
-      !exerciseName ||
-      typeof exerciseName !== "string" ||
-      !exerciseName.trim()
-    ) {
-      throw new ValidationError(
-        "exerciseName is required and must be a non-empty string",
-      )
-    }
+  const session = await getSessionDetails(sessionId, userId)
+  res.json({ success: true, session })
+})
 
-    await requireOwnSession(sessionId, userId)
-
-    const timing = await recordSetTiming(
-      sessionId,
-      exerciseName.trim(),
-      setIndex,
-      startTime,
-      endTime,
-      weight || 0,
-      reps || 0,
-      note || null,
-      isWarmup || false,
-      muscleGroup || null,
-    )
-
-    pushLiveUpdateToWatchers(userId, sessionId).catch((err: Error) =>
-      console.warn("[WS] live update push failed:", err.message),
-    )
-
-    res.json({ success: true, timing })
-  },
-)
-
-/**
- * PATCH /api/sessions/:sessionId/sets/:setId
- *
- * Edit a previously recorded set (weight, reps, timestamps, exercise, etc.).
- */
-router.patch(
-  "/:sessionId/sets/:setId",
-  authenticateToken,
-  validateSetTimingUpdate,
-  async (req: Request, res: Response) => {
-    const userId = req.user!.id
-    const sessionId = parseId(String(req.params.sessionId))
-    const setId = parseId(String(req.params.setId))
-    if (sessionId === null || setId === null) {
-      throw new ValidationError("Invalid session or set ID")
-    }
-
-    const timing = await updateSetTiming(sessionId, setId, userId, req.body)
-    res.json({ success: true, timing })
-  },
-)
-
-/**
- * POST /api/sessions/:sessionId/end
- */
-router.post(
-  "/:sessionId/end",
-  authenticateToken,
-  async (req: Request, res: Response) => {
-    const userId = req.user!.id
-    const sessionId = parseId(String(req.params.sessionId))
-    if (sessionId === null) throw new ValidationError("Invalid session ID")
-
-    const row = await requireOwnSession(sessionId, userId)
-    const session = await endSession(sessionId, req.body.endTime || null)
-
-    if (!row.is_admin) {
-      pushSessionStatusToWatchers(
-        userId,
-        req.user!.username,
-        null,
-        "friend_session_ended",
-      )
-    }
-
-    res.json({ success: true, session })
-  },
-)
-
-/**
- * GET /api/sessions/:sessionId
- */
-router.get(
-  "/:sessionId",
-  authenticateToken,
-  async (req: Request, res: Response) => {
-    const userId = req.user!.id
-    const sessionId = parseId(String(req.params.sessionId))
-    if (sessionId === null) throw new ValidationError("Invalid session ID")
-
-    const session = await getSessionDetails(sessionId, userId)
-    res.json({ success: true, session })
-  },
-)
-
-// ─── Bulk delete routes ───────────────────────────────────────────────────────
-// NOTE: Static paths (/admin, /person/:person, /) MUST come before the
+// NOTE: Static paths (/admin, /split/:split, /) MUST come before the
 // dynamic /:sessionId routes so Express doesn't treat "admin" as a session ID.
 
-/**
- * DELETE /api/sessions/admin
- */
-router.delete(
-  "/admin",
-  authenticateToken,
-  async (req: Request, res: Response) => {
-    const userId = req.user!.id
-    const deletedCount: number = await clearAdminSessions(userId)
+router.delete("/admin", async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const deletedCount: number = await clearAdminSessions(userId)
 
-    res.json({
-      success: true,
-      message: `Deleted ${deletedCount} admin session(s)`,
-      deletedCount,
-    })
-  },
-)
+  res.json({
+    success: true,
+    message: `Deleted ${deletedCount} admin session(s)`,
+    deletedCount,
+  })
+})
 
-/**
- * DELETE /api/sessions/person/:person
- */
-router.delete(
-  "/person/:person",
-  authenticateToken,
-  async (req: Request, res: Response) => {
-    const userId = req.user!.id
-    const person = String(req.params.person)
+router.delete("/split/:split", async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const split = String(req.params.split)
 
-    const result = await deleteAllSessionsForPerson(userId, person)
-    res.json(result)
-  },
-)
+  const deletedCount = await deleteAllSessionsForSplit(userId, split)
+  res.json({
+    success: deletedCount > 0,
+    deletedCount,
+    message: deletedCount
+      ? `Deleted ${deletedCount} session(s) for split: ${split}`
+      : `No sessions found for split: ${split}`,
+  })
+})
 
-
-// ─── WS push helpers ──────────────────────────────────────────────────────────
 
 async function getSessionWatchers(userId: number): Promise<{ to_user_id: number }[]> {
   const [watchers] = await pool.execute<any[]>(
@@ -334,7 +249,7 @@ async function pushSessionStatusToWatchers(
       })
     })
   } catch (err) {
-    console.warn(
+    logger.warn(
       "[WS] pushSessionStatusToWatchers failed:",
       (err as Error).message,
     )
@@ -353,7 +268,7 @@ async function pushLiveUpdateToWatchers(
   if (!liveSession) return
 
   watchers.forEach((w: { to_user_id: number }) => {
-    notifyWatcher(w.to_user_id, liveSession)
+    sendToUser(w.to_user_id, "live_session_update", { liveSession })
   })
 }
 

@@ -10,10 +10,14 @@
     docker exec <container> node dist/ownlift.js list
 */
 
-import dotenv from "dotenv"
-dotenv.config()
 
-import { findUserByUsername, setUserAdmin, listAdmins } from "./features/auth/auth.model.js"
+import {
+  findUserByUsername,
+  setUserAdmin,
+  listAdmins,
+  changePassword,
+} from "./features/auth/auth.model.js"
+import { listReports } from "./features/social/friends/friends.model.js"
 
 async function main() {
   const args = process.argv.slice(2)
@@ -25,6 +29,8 @@ async function main() {
     console.log("  list                     List admin users")
     console.log("  add <username>           Grant admin to a user")
     console.log("  remove <username>        Revoke admin from a user")
+    console.log("  passwd <username> <pw>   Set a user's password (account recovery)")
+    console.log("  reports [limit]          List user reports filed on this instance")
     process.exit(0)
   }
 
@@ -61,6 +67,47 @@ async function main() {
         process.exit(1)
       }
       console.log(`User ${username} admin=${cmd === "add"}`)
+      process.exit(0)
+    }
+
+    if (cmd === "passwd") {
+      const [username, newPassword] = args.slice(1)
+      if (!username || !newPassword) {
+        console.error("Usage: ownlift passwd <username> <newpassword>")
+        process.exit(2)
+      }
+      if (newPassword.length < 8 || !/[A-Za-z]/.test(newPassword) || !/\d/.test(newPassword)) {
+        console.error(
+          "Password must be at least 8 characters and include a letter and a number",
+        )
+        process.exit(2)
+      }
+      const user = await findUserByUsername(username)
+      if (!user) {
+        console.error(`User not found: ${username}`)
+        process.exit(2)
+      }
+      // changePassword bumps token_version, so every device signed in as this
+      // user is signed out — which is what you want after a recovery reset.
+      await changePassword(user.id, newPassword)
+      console.log(`Password reset for ${username}. All existing sessions were signed out.`)
+      process.exit(0)
+    }
+
+    if (cmd === "reports") {
+      const limit = parseInt(args[1] ?? "100", 10)
+      const reports = await listReports(isNaN(limit) ? 100 : limit)
+      if (!reports.length) {
+        console.log("No reports filed")
+        process.exit(0)
+      }
+      console.log(`${reports.length} report(s), newest first:`)
+      for (const r of reports) {
+        console.log(
+          `- #${r.id} ${r.created_at.toISOString()} ${r.reporter_username} reported ${r.reported_username} (${r.reason})`,
+        )
+        if (r.details) console.log(`    ${r.details}`)
+      }
       process.exit(0)
     }
 

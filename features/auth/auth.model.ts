@@ -1,12 +1,10 @@
 import bcrypt from "bcryptjs"
 import jwt from "jsonwebtoken"
 import type { SignOptions } from "jsonwebtoken"
-import type { RowDataPacket } from "mysql2"
-import type { InsertResult } from "../../types/index.js"
+import type { RowDataPacket, ResultSetHeader } from "mysql2"
 import type { AuthUser } from "./user.types.js"
-import { pool } from "../../config/database.js"
-
-// ─── DB row shapes ────────────────────────────────────────────────────────────
+import { ConflictError } from "@/middleware/errorHandler.js"
+import { pool } from "@/config/database.js"
 
 interface AuthUserRow extends RowDataPacket {
   id: number
@@ -16,10 +14,6 @@ interface AuthUserRow extends RowDataPacket {
   name: string
   is_admin: number
   created_at: Date
-}
-
-interface UserIdRow extends RowDataPacket {
-  id: number
 }
 
 function toAuthUser(u: AuthUserRow): AuthUser & { password_hash?: string } {
@@ -34,28 +28,44 @@ function toAuthUser(u: AuthUserRow): AuthUser & { password_hash?: string } {
   }
 }
 
-// ─── Queries ──────────────────────────────────────────────────────────────────
-
 export async function createUser(
   username: string,
   email: string,
   password: string,
   name?: string,
 ): Promise<number> {
-  const passwordHash = await bcrypt.hash(password, await bcrypt.genSalt(12))
+  const passwordHash = await bcrypt.hash(password, 12)
 
-  // If this is the first user in the DB, make them an admin.
   const [countRows] = await pool.execute<RowDataPacket[]>(
     `SELECT COUNT(*) AS cnt FROM users`,
   )
   const existing = (countRows as any)[0]?.cnt ?? 0
   const isAdmin = existing === 0 ? 1 : 0
 
-  const [result] = await pool.execute<InsertResult>(
-    `INSERT INTO users (username, email, password_hash, name, is_admin, created_at) VALUES (?, ?, ?, ?, ?, NOW())`,
-    [username, email, passwordHash, name || username, isAdmin],
-  )
-  return (result as unknown as InsertResult).insertId
+  // uq_users_username / uq_users_email do the uniqueness check, so there is no
+  // pre-check SELECT to lose the race against two simultaneous signups.
+  try {
+    const [result] = await pool.execute<ResultSetHeader>(
+      `INSERT INTO users (username, email, password_hash, name, is_admin, created_at) VALUES (?, ?, ?, ?, ?, NOW())`,
+      [username, email, passwordHash, name || username, isAdmin],
+    )
+    return result.insertId
+  } catch (err) {
+    throw asDuplicateUserError(err)
+  }
+}
+
+/**
+ * Turn a MySQL duplicate-key error on `users` into the ConflictError the route
+ * would otherwise have produced from a pre-check SELECT. Anything else is
+ * rethrown untouched.
+ */
+export function asDuplicateUserError(err: unknown): unknown {
+  const e = err as { errno?: number; message?: string }
+  if (e?.errno !== 1062) return err
+  return e.message?.includes("uq_users_email")
+    ? new ConflictError("Email already registered")
+    : new ConflictError("Username already taken")
 }
 
 export async function findUserByCredentials(
@@ -86,6 +96,26 @@ export async function findUserById(userId: number): Promise<AuthUser | null> {
   return users[0] ? toAuthUser(users[0]) : null
 }
 
+/**
+ * Profile plus token_version in one row — authenticateToken needs both on
+ * every request, and they live in the same table.
+ */
+export async function findUserForAuth(
+  userId: number,
+): Promise<{ user: AuthUser; tokenVersion: number } | null> {
+  const [rows] = await pool.execute<
+    (AuthUserRow & { token_version: number })[]
+  >(
+    `SELECT id, username, email, name, is_admin, created_at, token_version
+     FROM users WHERE id = ?`,
+    [userId],
+  )
+  const row = rows[0]
+  return row
+    ? { user: toAuthUser(row), tokenVersion: row.token_version ?? 0 }
+    : null
+}
+
 export const verifyPassword = (
   plain: string,
   hashed: string,
@@ -101,8 +131,8 @@ export function generateToken(userId: number, tokenVersion: number): string {
 /**
  * Current token version for a user — embedded in every JWT issued to them
  * and checked on every authenticated request. Bumping it (see
- * incrementTokenVersion) invalidates every outstanding token at once, since
- * none of them carry the new version.
+ * changePassword) invalidates every outstanding token at once, since none of
+ * them carry the new version.
  */
 export async function getTokenVersion(userId: number): Promise<number> {
   const [rows] = await pool.execute<(RowDataPacket & { token_version: number })[]>(
@@ -112,46 +142,34 @@ export async function getTokenVersion(userId: number): Promise<number> {
   return rows[0]?.token_version ?? 0
 }
 
-export async function incrementTokenVersion(userId: number): Promise<void> {
-  await pool.execute(
-    "UPDATE users SET token_version = token_version + 1 WHERE id = ?",
+/**
+ * Permanently delete an account after re-checking the password. Every
+ * user-owned table declares ON DELETE CASCADE on users(id), so dropping the
+ * row takes the user's workouts, tracking and social data with it.
+ *
+ * Returns false when the password doesn't match, so the caller can answer
+ * 403 rather than 401 - a 401 would look like an expired session to the app.
+ */
+export async function deleteUserAccount(
+  userId: number,
+  password: string,
+): Promise<boolean> {
+  const [rows] = await pool.execute<AuthUserRow[]>(
+    "SELECT password_hash FROM users WHERE id = ?",
     [userId],
   )
-}
+  const hash = rows[0]?.password_hash
+  if (!hash || !(await verifyPassword(password, hash))) return false
 
-export async function usernameExists(username: string): Promise<boolean> {
-  const [rows] = await pool.execute<UserIdRow[]>(
-    "SELECT id FROM users WHERE username = ?",
-    [username],
-  )
-  return rows.length > 0
-}
-
-export async function emailExists(email: string): Promise<boolean> {
-  const [rows] = await pool.execute<UserIdRow[]>(
-    "SELECT id FROM users WHERE email = ?",
-    [email],
-  )
-  return rows.length > 0
-}
-
-/** Does `email` belong to some user other than `excludingUserId`? One query. */
-export async function emailTakenByOtherUser(
-  email: string,
-  excludingUserId: number,
-): Promise<boolean> {
-  const [rows] = await pool.execute<UserIdRow[]>(
-    "SELECT id FROM users WHERE email = ? AND id != ?",
-    [email, excludingUserId],
-  )
-  return rows.length > 0
+  await pool.execute("DELETE FROM users WHERE id = ?", [userId])
+  return true
 }
 
 export async function changePassword(
   userId: number,
   newPassword: string,
 ): Promise<boolean> {
-  const hash = await bcrypt.hash(newPassword, await bcrypt.genSalt(12))
+  const hash = await bcrypt.hash(newPassword, 12)
   // Bump token_version too, so tokens issued before the password change
   // (e.g. to whoever leaked it) stop working immediately.
   await pool.execute(
@@ -161,13 +179,12 @@ export async function changePassword(
   return true
 }
 
-// ─── Admin helpers
 export async function setUserAdmin(userId: number, isAdmin: boolean): Promise<boolean> {
-  const [result] = await pool.execute<InsertResult>(
+  const [result] = await pool.execute<ResultSetHeader>(
     `UPDATE users SET is_admin = ? WHERE id = ?`,
     [isAdmin ? 1 : 0, userId],
   )
-  return (result as unknown as InsertResult).affectedRows > 0
+  return result.affectedRows > 0
 }
 
 export async function listAdmins(): Promise<AuthUser[]> {

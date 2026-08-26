@@ -1,18 +1,14 @@
-// src/config/database.ts
 import mysql, { Pool, PoolConnection } from "mysql2/promise";
 import fs from "fs";
 import path from "path";
-import dotenv from "dotenv";
-import type { QueryResult, FieldPacket, RowDataPacket } from "mysql2/promise";
+import type { RowDataPacket } from "mysql2/promise";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
+import { logger } from "../utils/logger.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-dotenv.config();
-
-// ─── Fail fast if critical env vars are missing ───────────────────────────────
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value)
@@ -27,7 +23,7 @@ export const pool: Pool = mysql.createPool({
   database: requireEnv("DB_NAME"),
   port: Number(process.env.DB_PORT) || 3306,
   waitForConnections: true,
-  connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 20,
+  connectionLimit: 20,
   // Bounded rather than unlimited (0): under a real overload, requests should
   // fail fast with an error the client can retry, not queue indefinitely and
   // pile up memory/timeouts.
@@ -35,15 +31,16 @@ export const pool: Pool = mysql.createPool({
   dateStrings: true,
 });
 
-/** Typed wrapper — avoids casting `params` to `any` at every call-site. */
-export function query<T extends QueryResult>(
-  sql: string,
-  params?: unknown[],
-): Promise<[T, FieldPacket[]]> {
-  return pool.execute<T>(sql, params as any);
+/**
+ * Formats a Date or date string as a MySQL DATETIME string (YYYY-MM-DD HH:MM:SS).
+ * Uses UTC methods so the stored value matches UTC regardless of the server's
+ * local timezone setting. Ensure MySQL is also configured to use UTC
+ * (set time_zone = '+00:00' in my.cnf or via SET GLOBAL time_zone).
+ */
+export function formatDateForMySQL(date: string | Date): string {
+  const d = date instanceof Date ? date : new Date(date)
+  return d.toISOString().slice(0, 19).replace("T", " ")
 }
-
-// ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 async function createDatabaseIfNotExists(): Promise<void> {
   const dbName = requireEnv("DB_NAME");
@@ -58,7 +55,7 @@ async function createDatabaseIfNotExists(): Promise<void> {
     await connection.execute(
       `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
     );
-    console.log(`✓ Database '${dbName}' verified/created`);
+    logger.info(`✓ Database '${dbName}' verified/created`);
   } finally {
     await connection.end();
   }
@@ -73,13 +70,11 @@ function parseSQLStatements(sql: string): string[] {
     .filter(Boolean);
 }
 
-// ─── Schema bootstrap ─────────────────────────────────────────────────────────
-//
 // Every statement in schema.sql is CREATE TABLE IF NOT EXISTS, so it's safe to
 // run on every boot. Further schema changes (new columns, indexes, etc.) go
 // through migrations/*.sql rather than edits to schema.sql.
 
-export async function initializeTables(): Promise<void> {
+async function initializeTables(): Promise<void> {
   const schemaPath = path.join(__dirname, "schema.sql");
   if (!fs.existsSync(schemaPath)) {
     throw new Error(`schema.sql not found at ${schemaPath}.`);
@@ -92,14 +87,12 @@ export async function initializeTables(): Promise<void> {
       if (/^(USE\s|CREATE\s+DATABASE)/i.test(stmt)) continue;
       await connection.execute(stmt);
     }
-    console.log("✓ All database tables initialized successfully");
+    logger.info("✓ All database tables initialized successfully");
   } finally {
     connection.release();
   }
 }
 
-// ─── Migrations ───────────────────────────────────────────────────────────────
-//
 // For schema changes that CREATE TABLE IF NOT EXISTS can't express (new
 // columns, indexes on existing tables). Each file in migrations/ runs at
 // most once, tracked in _migrations, in filename order.
@@ -134,12 +127,21 @@ async function runMigrations(): Promise<void> {
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
-      for (const stmt of statements) await connection.execute(stmt);
+      for (const stmt of statements) {
+        try {
+          await connection.execute(stmt);
+        } catch (err) {
+          // 1091 = column/key already gone. A fresh DB builds from schema.sql,
+          // which no longer has the columns older migrations drop, so treat
+          // those DROPs as already applied instead of failing the boot.
+          if ((err as { errno?: number }).errno !== 1091) throw err;
+        }
+      }
       await connection.execute(`INSERT INTO _migrations (name) VALUES (?)`, [
         file,
       ]);
       await connection.commit();
-      console.log(`✓ Applied migration ${file}`);
+      logger.info(`✓ Applied migration ${file}`);
     } catch (err) {
       await connection.rollback();
       throw err;
@@ -149,162 +151,19 @@ async function runMigrations(): Promise<void> {
   }
 }
 
-async function ensureAdditionalTrackingTables(): Promise<void> {
-  // Create tables that were added after initial schema versioning. Using
-  // CREATE TABLE IF NOT EXISTS keeps this idempotent and safe to run on an
-  // existing database.
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS muscle_soreness (
-      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      user_id INT UNSIGNED NOT NULL,
-      muscle_group VARCHAR(128) NOT NULL,
-      intensity TINYINT NOT NULL,
-      logged_at DATETIME NOT NULL,
-      note TEXT DEFAULT NULL,
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (id),
-      KEY idx_ms_user_date (user_id, logged_at),
-      CONSTRAINT fk_ms_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `);
-
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS menstrual_cycle (
-      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      user_id INT UNSIGNED NOT NULL,
-      cycle_start DATETIME NOT NULL,
-      cycle_end DATETIME DEFAULT NULL,
-      duration_days INT DEFAULT NULL,
-      flow_intensity ENUM('light','moderate','heavy') DEFAULT 'moderate',
-      symptoms TEXT DEFAULT NULL,
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (id),
-      KEY idx_mc_user_start (user_id, cycle_start),
-      CONSTRAINT fk_mc_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `);
-
-  // ─── Active DOMS (soreness with follow-ups) ──────────────────────────
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS active_soreness (
-      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      user_id INT UNSIGNED NOT NULL,
-      muscle_group VARCHAR(128) NOT NULL,
-      intensity TINYINT NOT NULL,
-      notes TEXT DEFAULT NULL,
-      logged_at DATETIME NOT NULL,
-      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      recovered_at DATETIME DEFAULT NULL,
-      status ENUM('active','recovering','recovered') NOT NULL DEFAULT 'active',
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (id),
-      KEY idx_as_user_status (user_id, status),
-      KEY idx_as_user_muscle (user_id, muscle_group),
-      CONSTRAINT fk_as_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `);
-
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS soreness_follow_up (
-      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      soreness_id INT UNSIGNED NOT NULL,
-      intensity TINYINT NOT NULL,
-      status ENUM('still_sore','better','recovered') NOT NULL,
-      notes TEXT DEFAULT NULL,
-      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (id),
-      KEY idx_sf_soreness (soreness_id),
-      CONSTRAINT fk_sf_soreness FOREIGN KEY (soreness_id) REFERENCES active_soreness (id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `);
-
-  // ─── Injury tracking ─────────────────────────────────────────────────
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS injuries (
-      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      user_id INT UNSIGNED NOT NULL,
-      muscle_group VARCHAR(128) NOT NULL,
-      injury_type ENUM('strain','sprain','tendonitis','fracture','dislocation','tear','overuse','surgery','other') NOT NULL,
-      pain_level TINYINT NOT NULL,
-      start_date DATETIME NOT NULL,
-      recovery_date DATETIME DEFAULT NULL,
-      notes TEXT DEFAULT NULL,
-      status ENUM('active','recovering','recovered') NOT NULL DEFAULT 'active',
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (id),
-      KEY idx_inj_user_status (user_id, status),
-      KEY idx_inj_user_muscle (user_id, muscle_group),
-      CONSTRAINT fk_inj_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `);
-
-  // ─── Progress photos with muscle tags ────────────────────────────────
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS progress_photos_muscle (
-      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      user_id INT UNSIGNED NOT NULL,
-      photo_data LONGBLOB NOT NULL,
-      mime_type VARCHAR(64) NOT NULL,
-      file_size INT UNSIGNED NOT NULL,
-      taken_at DATETIME NOT NULL,
-      notes TEXT DEFAULT NULL,
-      angle ENUM('front','back','side','custom') NOT NULL DEFAULT 'custom',
-      custom_side_name VARCHAR(255) DEFAULT NULL,
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (id),
-      KEY idx_ppm_user_taken (user_id, taken_at),
-      CONSTRAINT fk_ppm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `);
-
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS progress_photos_muscle_tags (
-      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      photo_id INT UNSIGNED NOT NULL,
-      muscle_group VARCHAR(128) NOT NULL,
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (id),
-      KEY idx_ppmt_photo (photo_id),
-      KEY idx_ppmt_muscle (muscle_group),
-      CONSTRAINT fk_ppmt_photo FOREIGN KEY (photo_id) REFERENCES progress_photos_muscle (id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `);
-
-  // ─── Personal muscle notes ───────────────────────────────────────────
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS personal_muscle_notes (
-      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      user_id INT UNSIGNED NOT NULL,
-      muscle_group VARCHAR(128) NOT NULL,
-      content TEXT NOT NULL,
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (id),
-      KEY idx_pmn_user_muscle (user_id, muscle_group),
-      CONSTRAINT fk_pmn_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `);
-}
-
 export async function testDatabaseConnection(): Promise<void> {
   try {
     await createDatabaseIfNotExists();
     const connection = await pool.getConnection();
-    console.log("✓ Database connected successfully");
+    logger.info("✓ Database connected successfully");
     connection.release();
     await initializeTables();
-    // Ensure any newer/additional tracking tables exist even if the DB was
-    // already initialized with an older schema version.
-    await ensureAdditionalTrackingTables();
     await runMigrations();
-    console.log("✓ Database is ready");
+    logger.info("✓ Database is ready");
   } catch (error) {
     // Log only the message — never the error object itself as it may contain
     // credentials from the pool config in certain mysql2 error shapes.
-    console.error(
+    logger.error(
       "✗ Database initialization failed:",
       (error as Error).message,
     );

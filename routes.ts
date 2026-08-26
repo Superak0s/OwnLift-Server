@@ -1,12 +1,11 @@
-// routes.ts
-import { Application } from "express"
+import { Application, Request, Response } from "express"
 
-import healthRoutes from "./features/health/health.routes.js"
+import packageJson from "./package.json" with { type: "json" }
+import { authenticateToken } from "./middleware/auth.js"
 import authRoutes from "./features/auth/auth.routes.js"
 import analyticsRoutes from "./features/analytics/analytics.routes.js"
 import sessionRoutes from "./features/workouts/workouts.routes.js"
 import programRoutes from "./features/programs/programs.routes.js"
-import versionRoutes from "./features/version/version.routes.js"
 import friendRoutes from "./features/social/friends/friends.routes.js"
 import sharingRoutes from "./features/social/sharing/sharing.routes.js"
 import macrosRoutes from "./features/tracking/macros/macros.routes.js"
@@ -16,7 +15,6 @@ import hydrationRoutes from "./features/tracking/hydration/hydration.routes.js"
 import sorenessRoutes from "./features/tracking/soreness/soreness.routes.js"
 import menstrualRoutes from "./features/tracking/menstrual/menstrual.routes.js"
 import supplementRoutes from "./features/tracking/supplements/supplements.routes.js"
-import photoRoutes from "./features/tracking/photos/photos.routes.js"
 import customMeasurementsRoutes from "./features/tracking/customMeasurements/customMeasurements.routes.js"
 import domsRoutes from "./features/tracking/doms/doms.routes.js"
 import injuryRoutes from "./features/tracking/injury/injury.routes.js"
@@ -24,8 +22,10 @@ import personalNotesRoutes from "./features/tracking/personalNotes/personalNotes
 import progressPhotoRoutes from "./features/tracking/progressPhoto/progressPhoto.routes.js"
 
 export function registerRoutes(app: Application): void {
-  app.use("/api/version", versionRoutes)
-  app.use("/api/health", healthRoutes)
+  // Auth-gated: the exact server version could be used to target known CVEs.
+  app.get("/api/version", authenticateToken, (_req: Request, res: Response) => {
+    res.json({ success: true, version: packageJson.version })
+  })
   app.use("/api/auth", authRoutes)
   app.use("/api/analytics", analyticsRoutes)
   app.use("/api/sessions", sessionRoutes)
@@ -39,10 +39,9 @@ export function registerRoutes(app: Application): void {
   app.use("/api/tracking/menstrual", menstrualRoutes)
   app.use("/api/tracking/macros", macrosRoutes)
   app.use("/api/tracking/supplements", supplementRoutes)
-  app.use("/api/tracking/photos", photoRoutes)
   app.use("/api/tracking/custom-measurements", customMeasurementsRoutes)
   app.use("/api/tracking/doms", domsRoutes)
   app.use("/api/tracking/injuries", injuryRoutes)
   app.use("/api/tracking/personal-notes", personalNotesRoutes)
-  app.use("/api/tracking/progress-photos", progressPhotoRoutes)
+  app.use("/api/tracking/photos/muscle", progressPhotoRoutes)
 }

@@ -1,11 +1,5 @@
-/**
- * types/user.ts
- * ─────────────────────────────────────────────────────────────────────────────
- * User account and profile shapes.
- */
-
 /** Full profile row returned from the `users` table. */
-export interface UserProfile {
+interface UserProfile {
   id: number
   username: string
   email: string

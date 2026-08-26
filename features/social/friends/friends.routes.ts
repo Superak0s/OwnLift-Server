@@ -1,9 +1,9 @@
 import { Router, Request, Response } from "express"
-import { authenticateToken } from "../../../middleware/auth.js"
+import { authenticateToken } from "@/middleware/auth.js"
 import {
   NotFoundError,
   ValidationError,
-} from "../../../middleware/errorHandler.js"
+} from "@/middleware/errorHandler.js"
 import {
   sendFriendRequest,
   acceptFriendRequest,
@@ -14,67 +14,50 @@ import {
   getSentRequests,
   searchUsers,
   findFriendSuggestionsByEmailHashes,
+  blockUser,
+  unblockUser,
+  getBlockedUsers,
+  reportUser,
+  REPORT_REASONS,
+  type ReportReason,
 } from "./friends.model.js"
-import { findUserById, findUserByUsername } from "../../auth/auth.model.js"
+import { findUserById, findUserByUsername } from "@/features/auth/auth.model.js"
+import { queryLimit, parseIntParam } from "@/middleware/validation.js"
 
 const router: Router = Router()
 
 router.use(authenticateToken)
 
-/**
- * GET /api/friends/search
- */
-router.get(
-  "/search",
-  async (req: Request, res: Response) => {
-    const { q, limit } = req.query
+router.get("/search", async (req: Request, res: Response) => {
+  const { q } = req.query
 
-    if (!q || (q as string).trim().length < 2) {
-      throw new ValidationError("Search term must be at least 2 characters")
-    }
+  if (!q || (q as string).trim().length < 2) {
+    throw new ValidationError("Search term must be at least 2 characters")
+  }
 
-    const users = await searchUsers(
-      (q as string).trim(),
-      req.user!.id,
-      limit ? Math.min(parseInt(limit as string) || 10, 50) : 10,
-    )
+  const users = await searchUsers(
+    (q as string).trim(),
+    req.user!.id,
+    queryLimit(req, { def: 10, max: 50 }),
+  )
 
-    res.json({ success: true, users, count: users.length })
-  },
-)
+  res.json({ success: true, users, count: users.length })
+})
 
-/**
- * GET /api/friends
- */
-router.get(
-  "/",
-  async (req: Request, res: Response) => {
-    const friends = await getFriends(req.user!.id)
-    res.json({ success: true, friends, count: friends.length })
-  },
-)
+router.get("/", async (req: Request, res: Response) => {
+  const friends = await getFriends(req.user!.id)
+  res.json({ success: true, friends, count: friends.length })
+})
 
-/**
- * GET /api/friends/requests/pending
- */
-router.get(
-  "/requests/pending",
-  async (req: Request, res: Response) => {
-    const requests = await getPendingRequests(req.user!.id)
-    res.json({ success: true, requests, count: requests.length })
-  },
-)
+router.get("/requests/pending", async (req: Request, res: Response) => {
+  const requests = await getPendingRequests(req.user!.id)
+  res.json({ success: true, requests, count: requests.length })
+})
 
-/**
- * GET /api/friends/requests/sent
- */
-router.get(
-  "/requests/sent",
-  async (req: Request, res: Response) => {
-    const requests = await getSentRequests(req.user!.id)
-    res.json({ success: true, requests, count: requests.length })
-  },
-)
+router.get("/requests/sent", async (req: Request, res: Response) => {
+  const requests = await getSentRequests(req.user!.id)
+  res.json({ success: true, requests, count: requests.length })
+})
 
 /**
  * POST /api/friends/suggest-from-contacts
@@ -83,133 +66,172 @@ router.get(
  * phone contacts' emails, hashed client-side. We only ever compare hashes
  * here; raw emails from the contact list never reach the server.
  */
-router.post(
-  "/suggest-from-contacts",
-  async (req: Request, res: Response) => {
-    const { emailHashes } = req.body
+router.post("/suggest-from-contacts", async (req: Request, res: Response) => {
+  const { emailHashes } = req.body
 
-    if (!Array.isArray(emailHashes)) {
-      throw new ValidationError("emailHashes must be an array")
-    }
+  if (!Array.isArray(emailHashes)) {
+    throw new ValidationError("emailHashes must be an array")
+  }
 
-    if (emailHashes.length === 0) {
-      res.json({ success: true, suggestions: [], count: 0 })
-      return
-    }
+  if (emailHashes.length === 0) {
+    res.json({ success: true, suggestions: [], count: 0 })
+    return
+  }
 
-    if (emailHashes.length > 2000) {
-      throw new ValidationError("Too many contacts submitted (max 2000)")
-    }
+  if (emailHashes.length > 2000) {
+    throw new ValidationError("Too many contacts submitted (max 2000)")
+  }
 
-    const isValidHash = (h: unknown): h is string =>
-      typeof h === "string" && /^[a-f0-9]{64}$/i.test(h)
+  const isValidHash = (h: unknown): h is string =>
+    typeof h === "string" && /^[a-f0-9]{64}$/i.test(h)
 
-    if (!emailHashes.every(isValidHash)) {
-      throw new ValidationError(
-        "emailHashes must be SHA-256 hex digests (64 hex characters each)",
-      )
-    }
-
-    const suggestions = await findFriendSuggestionsByEmailHashes(
-      req.user!.id,
-      emailHashes,
+  if (!emailHashes.every(isValidHash)) {
+    throw new ValidationError(
+      "emailHashes must be SHA-256 hex digests (64 hex characters each)",
     )
+  }
 
-    res.json({ success: true, suggestions, count: suggestions.length })
-  },
-)
+  const suggestions = await findFriendSuggestionsByEmailHashes(
+    req.user!.id,
+    emailHashes,
+  )
 
-/**
- * POST /api/friends/request
- */
-router.post(
-  "/request",
-  async (req: Request, res: Response) => {
-    const { username } = req.body
+  res.json({ success: true, suggestions, count: suggestions.length })
+})
 
-    if (!username) {
-      throw new ValidationError("Username is required")
-    }
+router.post("/request", async (req: Request, res: Response) => {
+  const { username } = req.body
 
-    // Cheap self-request check before any DB round-trip
-    if (username === req.user!.username) {
-      throw new ValidationError("Cannot send friend request to yourself")
-    }
+  if (!username) {
+    throw new ValidationError("Username is required")
+  }
 
-    // Use a dedicated model function — no dynamic import needed
-    const targetUser = await findUserByUsername(username)
+  // Cheap self-request check before any DB round-trip
+  if (username === req.user!.username) {
+    throw new ValidationError("Cannot send friend request to yourself")
+  }
 
-    if (!targetUser) {
-      throw new NotFoundError("User")
-    }
+  const targetUser = await findUserByUsername(username)
 
-    // Belt-and-suspenders ID check (handles username case-sensitivity edge cases)
-    if (targetUser.id === req.user!.id) {
-      throw new ValidationError("Cannot send friend request to yourself")
-    }
+  if (!targetUser) {
+    throw new NotFoundError("User")
+  }
 
-    const friendshipId = await sendFriendRequest(req.user!.id, targetUser.id)
+  // Belt-and-suspenders ID check (handles username case-sensitivity edge cases)
+  if (targetUser.id === req.user!.id) {
+    throw new ValidationError("Cannot send friend request to yourself")
+  }
 
-    const { notifyFriendRequest } = await import("../../../ws/wsServer.js")
-    notifyFriendRequest(targetUser.id, {
-      friendshipId,
-      fromUserId: req.user!.id,
-      fromUsername: req.user!.username,
-    })
+  const friendshipId = await sendFriendRequest(req.user!.id, targetUser.id)
 
-    res.status(201).json({
-      success: true,
-      message: "Friend request sent",
-      friendship_id: friendshipId,
-      to_user: {
-        id: targetUser.id,
-        username: targetUser.username,
-        name: targetUser.name,
-      },
-    })
-  },
-)
+  const { sendToUser } = await import("@/ws/wsServer.js")
+  sendToUser(targetUser.id, "friend_request_received", {
+    friendshipId,
+    fromUserId: req.user!.id,
+    fromUsername: req.user!.username,
+  })
 
-/**
- * POST /api/friends/request/:friendshipId/accept
- */
-router.post(
-  "/request/:friendshipId/accept",
-  async (req: Request, res: Response) => {
-    const friendshipId = parseInt(String(req.params.friendshipId), 10)
-    if (isNaN(friendshipId)) throw new ValidationError("Invalid friendship ID")
+  res.status(201).json({
+    success: true,
+    message: "Friend request sent",
+    friendship_id: friendshipId,
+    to_user: {
+      id: targetUser.id,
+      username: targetUser.username,
+      name: targetUser.name,
+    },
+  })
+})
 
-    await acceptFriendRequest(req.user!.id, friendshipId)
-    res.json({ success: true, message: "Friend request accepted" })
-  },
-)
+router.post("/request/:friendshipId/accept", async (req: Request, res: Response) => {
+  const friendshipId = parseIntParam(String(req.params.friendshipId), "friendship ID")
 
-/**
- * POST /api/friends/request/:friendshipId/reject
- */
-router.post(
-  "/request/:friendshipId/reject",
-  async (req: Request, res: Response) => {
-    const friendshipId = parseInt(String(req.params.friendshipId), 10)
-    if (isNaN(friendshipId)) throw new ValidationError("Invalid friendship ID")
+  await acceptFriendRequest(req.user!.id, friendshipId)
+  res.json({ success: true, message: "Friend request accepted" })
+})
 
-    await rejectFriendRequest(req.user!.id, friendshipId)
-    res.json({ success: true, message: "Friend request rejected" })
-  },
-)
+router.post("/request/:friendshipId/reject", async (req: Request, res: Response) => {
+  const friendshipId = parseIntParam(String(req.params.friendshipId), "friendship ID")
+
+  await rejectFriendRequest(req.user!.id, friendshipId)
+  res.json({ success: true, message: "Friend request rejected" })
+})
+
+router.delete("/:friendId", async (req: Request, res: Response) => {
+  const friendId = parseIntParam(String(req.params.friendId), "friend ID")
+
+  await removeFriend(req.user!.id, friendId)
+  res.json({ success: true, message: "Friend removed" })
+})
+
+router.get("/blocked", async (req: Request, res: Response) => {
+  const blocked = await getBlockedUsers(req.user!.id)
+  res.json({ success: true, blocked, count: blocked.length })
+})
 
 /**
- * DELETE /api/friends/:friendId
+ * POST /api/friends/block/:userId
+ *
+ * Blocking also removes the friendship and every sharing permission between
+ * the two accounts (see blockUser), so it is not reversible by unblocking —
+ * the pair have to re-add each other afterwards.
  */
-router.delete(
-  "/:friendId",
-  async (req: Request, res: Response) => {
-    const friendId = parseInt(String(req.params.friendId), 10)
-    if (isNaN(friendId)) throw new ValidationError("Invalid friend ID")
+router.post("/block/:userId", async (req: Request, res: Response) => {
+  const userId = parseIntParam(String(req.params.userId), "user ID")
 
-    await removeFriend(req.user!.id, friendId)
-    res.json({ success: true, message: "Friend removed" })
-  },
-)
+  const target = await findUserById(userId)
+  if (!target) throw new NotFoundError("User")
+
+  await blockUser(req.user!.id, userId)
+  res.json({ success: true, message: "User blocked" })
+})
+
+router.delete("/block/:userId", async (req: Request, res: Response) => {
+  const userId = parseIntParam(String(req.params.userId), "user ID")
+
+  if (!(await unblockUser(req.user!.id, userId))) {
+    throw new NotFoundError("Block")
+  }
+  res.json({ success: true, message: "User unblocked" })
+})
+
+/**
+ * POST /api/friends/report
+ *
+ * Body: { userId, reason, details? }. Reports are stored for this instance's
+ * operator to review (`pnpm ownlift reports`); a self-hosted deployment has
+ * no central moderation team to forward them to.
+ */
+router.post("/report", async (req: Request, res: Response) => {
+  const { userId, reason, details } = req.body
+
+  const targetId = parseInt(String(userId), 10)
+  if (isNaN(targetId)) throw new ValidationError("Invalid user ID")
+
+  if (!REPORT_REASONS.includes(reason)) {
+    throw new ValidationError(
+      `reason must be one of: ${REPORT_REASONS.join(", ")}`,
+    )
+  }
+
+  if (details !== undefined && typeof details !== "string") {
+    throw new ValidationError("details must be a string")
+  }
+
+  if (!(await findUserById(targetId))) throw new NotFoundError("User")
+
+  const reportId = await reportUser(
+    req.user!.id,
+    targetId,
+    reason as ReportReason,
+    details,
+  )
+
+  res.status(201).json({
+    success: true,
+    message: "Report submitted",
+    report_id: reportId,
+  })
+})
 
 export default router

@@ -1,16 +1,12 @@
 // DOMS (Delayed Onset Muscle Soreness) active tracking with follow-ups
 
-import { pool } from "../../../config/database.js";
-import { query as dbQuery } from "../../../config/database.js";
-import type { RowDataPacket } from "mysql2";
+import { pool, formatDateForMySQL } from "@/config/database.js";
+import type { RowDataPacket, ResultSetHeader } from "mysql2";
 import type { PoolConnection } from "mysql2/promise";
-import type { InsertResult } from "../../../types/index.js";
-import { formatDateForMySQL } from "../../../utils/dateHelpers.js";
-import { ValidationError, NotFoundError } from "../../../middleware/errorHandler.js";
+import { logger } from "@/utils/logger.js";
+import { ValidationError, NotFoundError } from "@/middleware/errorHandler.js";
 
-// ─── Interfaces ───────────────────────────────────────────────────────────────
-
-export interface SorenessFollowUp {
+interface SorenessFollowUp {
   id: number;
   sorenessId: number;
   intensity: number;
@@ -19,7 +15,7 @@ export interface SorenessFollowUp {
   updatedAt: Date;
 }
 
-export interface ActiveSoreness {
+interface ActiveSoreness {
   id: number;
   muscleGroup: string;
   intensity: number;
@@ -31,7 +27,7 @@ export interface ActiveSoreness {
   followUps: SorenessFollowUp[];
 }
 
-export interface DOMSStats {
+interface DOMSStats {
   totalActiveSoreness: number;
   totalRecoveryEpisodes: number;
   averageRecoveryDays: number;
@@ -39,8 +35,6 @@ export interface DOMSStats {
   heatmapData: Record<string, number>;
   severityTrend: Array<{ date: string; averageIntensity: number }>;
 }
-
-// ─── DB row shapes ────────────────────────────────────────────────────────────
 
 interface ActiveSorenessRow extends RowDataPacket {
   id: number;
@@ -62,47 +56,18 @@ interface FollowUpRow extends RowDataPacket {
   updated_at: Date;
 }
 
-interface StatsActiveRow extends RowDataPacket {
-  count: number;
-}
-
-interface StatsRecoveredRow extends RowDataPacket {
-  count: number;
-}
-
-interface AvgRecoveryRow extends RowDataPacket {
-  avg_days: number | null;
-}
-
-interface MostSoreRow extends RowDataPacket {
-  muscle_group: string;
-  intensity: number;
-}
-
-interface HeatmapRow extends RowDataPacket {
-  muscle_group: string;
-  freq: number;
-}
-
-interface TrendRow extends RowDataPacket {
-  date: string;
-  avg_intensity: number;
-}
-
-// ─── Queries ──────────────────────────────────────────────────────────────────
-
 export async function logSoreness(
   userId: number,
   muscleGroup: string,
   intensity: number,
   notes?: string | null,
+  loggedAt?: string | null,
 ): Promise<ActiveSoreness> {
   if (!Number.isInteger(intensity) || intensity < 0 || intensity > 10) {
     throw new ValidationError("Intensity must be an integer from 0-10");
   }
 
-  // Check if there's already an active soreness for this muscle
-  const [existing] = await dbQuery<ActiveSorenessRow[]>(
+  const [existing] = await pool.execute<ActiveSorenessRow[]>(
     `SELECT id FROM active_soreness WHERE user_id = ? AND muscle_group = ? AND status IN ('active', 'recovering')`,
     [userId, muscleGroup],
   );
@@ -113,30 +78,22 @@ export async function logSoreness(
     );
   }
 
-  const [result] = await pool.execute<
-    InsertResult & { constructor: { name: string } }
-  >(
+  const ts = formatDateForMySQL(loggedAt ?? new Date());
+  const [result] = await pool.execute<ResultSetHeader>(
     `INSERT INTO active_soreness (user_id, muscle_group, intensity, notes, status, logged_at, updated_at)
      VALUES (?, ?, ?, ?, 'active', ?, ?)`,
-    [
-      userId,
-      muscleGroup,
-      intensity,
-      notes ?? null,
-      formatDateForMySQL(new Date()),
-      formatDateForMySQL(new Date()),
-    ],
+    [userId, muscleGroup, intensity, notes ?? null, ts, ts],
   );
 
-  const id = (result as unknown as InsertResult).insertId;
+  const id = result.insertId;
   return getSorenessById(userId, id);
 }
 
-export async function getSorenessById(
+async function getSorenessById(
   userId: number,
   sorenessId: number,
 ): Promise<ActiveSoreness> {
-  const [rows] = await dbQuery<ActiveSorenessRow[]>(
+  const [rows] = await pool.execute<ActiveSorenessRow[]>(
     `SELECT * FROM active_soreness WHERE id = ? AND user_id = ?`,
     [sorenessId, userId],
   );
@@ -149,7 +106,7 @@ export async function getSorenessById(
 export async function getActiveSoreness(
   userId: number,
 ): Promise<ActiveSoreness[]> {
-  const [rows] = await dbQuery<ActiveSorenessRow[]>(
+  const [rows] = await pool.execute<ActiveSorenessRow[]>(
     `SELECT * FROM active_soreness WHERE user_id = ? AND status IN ('active', 'recovering')
      ORDER BY updated_at DESC`,
     [userId],
@@ -170,8 +127,9 @@ export async function updateSorenessWithFollowUp(
   status: "still_sore" | "better" | "recovered",
   notes?: string | null,
 ): Promise<ActiveSoreness> {
-  // Verify the soreness belongs to the user
-  const soreness = await getSorenessById(userId, sorenessId);
+  // Ownership guard: throws NotFoundError unless this soreness row is the
+  // caller's. The row itself is not needed here.
+  await getSorenessById(userId, sorenessId);
 
   if (!Number.isInteger(intensity) || intensity < 0 || intensity > 10) {
     throw new ValidationError("Intensity must be an integer from 0-10");
@@ -179,7 +137,6 @@ export async function updateSorenessWithFollowUp(
 
   const now = formatDateForMySQL(new Date());
 
-  // Determine the new status for the active soreness record
   const newSorenessStatus: "active" | "recovering" | "recovered" =
     status === "recovered"
       ? "recovered"
@@ -191,10 +148,7 @@ export async function updateSorenessWithFollowUp(
   try {
     await connection.beginTransaction();
 
-    // Update the active soreness record
-    await connection.execute<
-      InsertResult & { constructor: { name: string } }
-    >(
+    await connection.execute<ResultSetHeader>(
       `UPDATE active_soreness
        SET intensity = ?, status = ?, updated_at = ?, recovered_at = COALESCE(recovered_at, ?), notes = COALESCE(?, notes)
        WHERE id = ? AND user_id = ?`,
@@ -209,10 +163,7 @@ export async function updateSorenessWithFollowUp(
       ],
     );
 
-    // Insert follow-up record
-    await connection.execute<
-      InsertResult & { constructor: { name: string } }
-    >(
+    await connection.execute<ResultSetHeader>(
       `INSERT INTO soreness_follow_up (soreness_id, intensity, status, notes, updated_at)
        VALUES (?, ?, ?, ?, ?)`,
       [sorenessId, intensity, status, notes ?? null, now],
@@ -254,8 +205,7 @@ export async function batchFollowUp(
       );
       results.push(result);
     } catch (error) {
-      // Skip invalid entries and continue with the rest
-      console.error(
+      logger.error(
         `Error updating soreness ${update.sorenessId}:`,
         error,
       );
@@ -269,7 +219,7 @@ export async function getHistoryByMuscle(
   userId: number,
   muscle: string,
 ): Promise<ActiveSoreness[]> {
-  const [rows] = await dbQuery<ActiveSorenessRow[]>(
+  const [rows] = await pool.execute<ActiveSorenessRow[]>(
     `SELECT * FROM active_soreness WHERE user_id = ? AND muscle_group = ?
      ORDER BY logged_at DESC`,
     [userId, muscle],
@@ -287,38 +237,39 @@ export async function getDOMSStats(
   userId: number,
   days: number = 30,
 ): Promise<DOMSStats> {
-  // Total active soreness
-  const [activeRows] = await dbQuery<StatsActiveRow[]>(
+  const [activeRows] = await pool.execute<(RowDataPacket & { count: number })[]>(
     `SELECT COUNT(*) AS count FROM active_soreness
      WHERE user_id = ? AND status IN ('active', 'recovering')`,
     [userId],
   );
 
-  // Total recovery episodes
-  const [recoveredRows] = await dbQuery<StatsRecoveredRow[]>(
+  const [recoveredRows] = await pool.execute<(RowDataPacket & { count: number })[]>(
     `SELECT COUNT(*) AS count FROM active_soreness
      WHERE user_id = ? AND status = 'recovered'`,
     [userId],
   );
 
-  // Average recovery days (time from logged_at to recovered_at)
-  const [avgRows] = await dbQuery<AvgRecoveryRow[]>(
+  const [avgRows] = await pool.execute<
+    (RowDataPacket & { avg_days: number | null })[]
+  >(
     `SELECT AVG(DATEDIFF(recovered_at, logged_at)) AS avg_days
      FROM active_soreness
      WHERE user_id = ? AND status = 'recovered' AND recovered_at IS NOT NULL`,
     [userId],
   );
 
-  // Most sore muscle (highest current intensity among active)
-  const [mostSoreRows] = await dbQuery<MostSoreRow[]>(
+  const [mostSoreRows] = await pool.execute<
+    (RowDataPacket & { muscle_group: string })[]
+  >(
     `SELECT muscle_group, intensity FROM active_soreness
      WHERE user_id = ? AND status IN ('active', 'recovering')
      ORDER BY intensity DESC LIMIT 1`,
     [userId],
   );
 
-  // Heatmap data (frequency of soreness per muscle)
-  const [heatmapRows] = await dbQuery<HeatmapRow[]>(
+  const [heatmapRows] = await pool.execute<
+    (RowDataPacket & { muscle_group: string; freq: number })[]
+  >(
     `SELECT muscle_group AS muscle_group, COUNT(*) AS freq
      FROM active_soreness
      WHERE user_id = ? AND logged_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
@@ -326,8 +277,9 @@ export async function getDOMSStats(
     [userId, days],
   );
 
-  // Severity trend (daily average intensity)
-  const [trendRows] = await dbQuery<TrendRow[]>(
+  const [trendRows] = await pool.execute<
+    (RowDataPacket & { date: string; avg_intensity: number })[]
+  >(
     `SELECT DATE(logged_at) AS date, AVG(intensity) AS avg_intensity
      FROM active_soreness
      WHERE user_id = ? AND logged_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
@@ -356,51 +308,11 @@ export async function getDOMSStats(
   };
 }
 
-export async function getSorenessMap(
-  userId: number,
-): Promise<Record<string, number>> {
-  const [rows] = await dbQuery<
-    (RowDataPacket & { muscle_group: string; intensity: number })[]
-  >(
-    `SELECT muscle_group, intensity FROM active_soreness
-     WHERE user_id = ? AND status IN ('active', 'recovering')`,
-    [userId],
-  );
-
-  const map: Record<string, number> = {};
-  for (const row of rows) {
-    map[row.muscle_group] = row.intensity;
-  }
-  return map;
-}
-
-export async function getSorenessByDateRange(
-  userId: number,
-  startDate: string,
-  endDate: string,
-): Promise<ActiveSoreness[]> {
-  const [rows] = await dbQuery<ActiveSorenessRow[]>(
-    `SELECT * FROM active_soreness
-     WHERE user_id = ? AND DATE(logged_at) BETWEEN ? AND ?
-     ORDER BY logged_at DESC`,
-    [userId, startDate, endDate],
-  );
-
-  const results: ActiveSoreness[] = [];
-  for (const row of rows) {
-    const followUps = await getFollowUpsForSoreness(userId, row.id);
-    results.push(formatActiveSoreness(row, followUps));
-  }
-  return results;
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 async function getFollowUpsForSoreness(
   _userId: number,
   sorenessId: number,
 ): Promise<SorenessFollowUp[]> {
-  const [rows] = await dbQuery<FollowUpRow[]>(
+  const [rows] = await pool.execute<FollowUpRow[]>(
     `SELECT * FROM soreness_follow_up WHERE soreness_id = ? ORDER BY updated_at ASC`,
     [sorenessId],
   );

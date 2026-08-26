@@ -1,14 +1,12 @@
-import { pool, query as dbQuery } from "../../../config/database.js"
-import type { RowDataPacket } from "mysql2"
-import type { InsertResult } from "../../../types/index.js"
-import { formatDateForMySQL } from "../../../utils/dateHelpers.js"
-import { NotFoundError, ValidationError } from "../../../middleware/errorHandler.js"
+import { pool, formatDateForMySQL } from "@/config/database.js"
+import type { RowDataPacket, ResultSetHeader } from "mysql2"
+import { NotFoundError, ValidationError } from "@/middleware/errorHandler.js"
 
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"] as const
-const MAX_PHOTO_SIZE = 10 * 1024 * 1024 // 10 MB
+const MAX_PHOTO_SIZE = 10 * 1024 * 1024
 const ALLOWED_ANGLES = ["front", "back", "side", "custom"] as const
 
-export interface ProgressPhotoMuscleMeta {
+interface ProgressPhotoMuscleMeta {
   id: number
   takenAt: Date
   uri: string
@@ -29,16 +27,11 @@ interface PhotoMetaRow extends RowDataPacket {
   muscle_groups: string | null
 }
 
-interface PhotoDataRow extends RowDataPacket {
-  photo_data: Buffer
-  mime_type: string
-}
-
 function formatMeta(row: PhotoMetaRow): ProgressPhotoMuscleMeta {
   return {
     id: row.id,
     takenAt: row.taken_at,
-    uri: `/api/tracking/progress-photos/${row.id}/image`,
+    uri: `/api/tracking/photos/muscle/${row.id}/image`,
     muscleGroups: row.muscle_groups ? row.muscle_groups.split(",") : [],
     notes: row.notes,
     angle: row.angle,
@@ -67,7 +60,7 @@ export async function uploadPhoto(
   if (!Buffer.isBuffer(photoBuffer) || photoBuffer.length === 0)
     throw new ValidationError("Invalid photo data")
   if (photoBuffer.length > MAX_PHOTO_SIZE)
-    throw new ValidationError("Photo size exceeds 10MB limit")
+    throw new ValidationError(`Photo size exceeds ${MAX_PHOTO_SIZE / (1024 * 1024)}MB limit`)
   if (!(ALLOWED_MIME_TYPES as readonly string[]).includes(mimeType))
     throw new ValidationError("Invalid image type. Allowed: JPEG, PNG, WebP")
   if (!(ALLOWED_ANGLES as readonly string[]).includes(angle))
@@ -81,7 +74,7 @@ export async function uploadPhoto(
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
-    const [result] = await connection.execute(
+    const [result] = await connection.execute<ResultSetHeader>(
       `INSERT INTO progress_photos_muscle (user_id, photo_data, mime_type, file_size, taken_at, notes, angle, custom_side_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         userId,
@@ -94,7 +87,7 @@ export async function uploadPhoto(
         customSideName ?? null,
       ],
     )
-    const photoId = (result as unknown as InsertResult).insertId
+    const photoId = result.insertId
 
     for (const muscleGroup of muscleGroups) {
       await connection.execute(
@@ -117,7 +110,7 @@ export async function getAllPhotos(
   userId: number,
   limit = 100,
 ): Promise<ProgressPhotoMuscleMeta[]> {
-  const [rows] = await dbQuery<PhotoMetaRow[]>(
+  const [rows] = await pool.execute<PhotoMetaRow[]>(
     `${SELECT_WITH_TAGS} WHERE p.user_id = ? GROUP BY p.id ORDER BY p.taken_at DESC LIMIT ?`,
     [userId, limit],
   )
@@ -128,7 +121,7 @@ export async function getPhotosByMuscle(
   userId: number,
   muscleGroup: string,
 ): Promise<ProgressPhotoMuscleMeta[]> {
-  const [rows] = await dbQuery<PhotoMetaRow[]>(
+  const [rows] = await pool.execute<PhotoMetaRow[]>(
     `${SELECT_WITH_TAGS}
      WHERE p.user_id = ? AND p.id IN (
        SELECT photo_id FROM progress_photos_muscle_tags WHERE muscle_group = ?
@@ -139,25 +132,11 @@ export async function getPhotosByMuscle(
   return rows.map(formatMeta)
 }
 
-export async function getPhotosInRange(
-  userId: number,
-  startDate: string,
-  endDate: string,
-): Promise<ProgressPhotoMuscleMeta[]> {
-  const [rows] = await dbQuery<PhotoMetaRow[]>(
-    `${SELECT_WITH_TAGS}
-     WHERE p.user_id = ? AND DATE(p.taken_at) BETWEEN ? AND ?
-     GROUP BY p.id ORDER BY p.taken_at DESC`,
-    [userId, startDate, endDate],
-  )
-  return rows.map(formatMeta)
-}
-
 export async function getPhotoImage(
   userId: number,
   photoId: number,
 ): Promise<{ photoData: Buffer; mimeType: string }> {
-  const [rows] = await dbQuery<PhotoDataRow[]>(
+  const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT photo_data, mime_type FROM progress_photos_muscle WHERE id = ? AND user_id = ?`,
     [photoId, userId],
   )
@@ -166,11 +145,11 @@ export async function getPhotoImage(
 }
 
 export async function deletePhoto(userId: number, photoId: number): Promise<boolean> {
-  const [result] = await pool.execute(
+  const [result] = await pool.execute<ResultSetHeader>(
     `DELETE FROM progress_photos_muscle WHERE id = ? AND user_id = ?`,
     [photoId, userId],
   )
-  if ((result as unknown as InsertResult).affectedRows === 0)
+  if (result.affectedRows === 0)
     throw new NotFoundError("Photo")
   return true
 }
