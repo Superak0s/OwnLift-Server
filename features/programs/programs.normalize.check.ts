@@ -9,12 +9,19 @@ const p = normalizeProgram({
     {
       dayNumber: 1,
       dayTitle: "Push",
-      muscleGroups: ["chest"],
+      primaryMuscles: ["chest"],
+      secondaryMuscles: ["triceps"],
       exercises: [
-        { name: "Bench", muscleGroup: "chest", setsBySplit: { PPL: 4 } },
+        {
+          name: "Bench",
+          primaryMuscles: ["chest"],
+          secondaryMuscles: [],
+          setsBySplit: { PPL: 4 },
+        },
         {
           name: "Fly",
-          muscleGroup: "chest",
+          primaryMuscles: ["chest"],
+          secondaryMuscles: ["triceps"],
           exerciseId: "Cable_Fly",
           setsBySplit: { PPL: 3 },
         },
@@ -22,12 +29,25 @@ const p = normalizeProgram({
       split: {
         PPL: {
           exercises: [
-            { name: "Bench", muscleGroup: "chest", sets: 4 },
+            {
+              name: "Bench",
+              primaryMuscles: ["chest"],
+              secondaryMuscles: [],
+              sets: 4,
+            },
             {
               name: "Fly",
-              muscleGroup: "chest",
+              primaryMuscles: ["chest"],
+              secondaryMuscles: ["triceps"],
               sets: 3,
               exerciseId: "Cable_Fly",
+              // The machine list is client-owned and unknown to the server;
+              // it only has to survive a save/load round-trip untouched.
+              machines: ["Machine A", "Smith"],
+              selectedMachine: "Machine A",
+              defaultMachine: "Smith",
+              bestAcrossMachines: { "Machine A": 60 },
+              machineMeta: { "Machine A": { note: "seat 4", pin: true } },
             },
           ],
           totalSets: 7,
@@ -43,4 +63,11 @@ assert.deepEqual(matched.setsBySplit, { PPL: 3 })
 assert.equal(matched.exerciseId, "Cable_Fly")
 assert.equal(p.days[0].split.PPL.exercises[0].exerciseId, null)
 assert.equal(p.days[0].split.PPL.exercises[1].exerciseId, "Cable_Fly")
+
+// Unknown per-exercise keys must round-trip through the JSON column verbatim.
+const roundTripped = normalizeProgram(JSON.parse(JSON.stringify(p)) as ProgramData)
+assert.deepEqual(
+  roundTripped.days[0].split.PPL.exercises[1],
+  p.days[0].split.PPL.exercises[1],
+)
 console.log("normalizeProgram ok")

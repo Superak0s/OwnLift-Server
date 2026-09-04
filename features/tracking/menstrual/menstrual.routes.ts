@@ -1,8 +1,6 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
-import {
-  ValidationError,
-} from "@/middleware/errorHandler.js"
+import { ValidationError } from "@/middleware/errorHandler.js"
 import {
   logMenstrualCycle,
   getMenstrualHistory,
@@ -11,8 +9,6 @@ import {
   getMenstrualSettings,
   setMenstrualSettings,
 } from "./menstrual.model.js"
-import { setDayFlow } from "./menstrualDayFlow.model.js"
-import type { FlowIntensity } from "../tracking.types.js"
 import { queryLimit, parseIntParam } from "@/middleware/validation.js"
 
 const router: Router = Router()
@@ -20,21 +16,15 @@ const router: Router = Router()
 router.use(authenticateToken)
 
 router.post("/", async (req: Request, res: Response) => {
-  const { cycleStart, flowIntensity, symptoms } = req.body
+  const { cycleStart, symptoms } = req.body
 
   if (!cycleStart) {
     throw new ValidationError("Cycle start date is required")
   }
 
-  const intensity = flowIntensity || "moderate"
-  if (!["light", "moderate", "heavy"].includes(intensity)) {
-    throw new ValidationError("Flow intensity must be: light, moderate, or heavy")
-  }
-
   const id = await logMenstrualCycle(
     req.user!.id,
     cycleStart,
-    intensity as FlowIntensity,
     symptoms || null,
   )
   res.status(201).json({ success: true, id })
@@ -66,21 +56,20 @@ router.get("/settings", async (req: Request, res: Response) => {
 
 router.post("/settings", async (req: Request, res: Response) => {
   const { periodDays, cycleLengthDays } = req.body
-  if (periodDays != null && (!Number.isInteger(periodDays) || periodDays <= 0)) {
+  if (
+    periodDays != null &&
+    (!Number.isInteger(periodDays) || periodDays <= 0)
+  ) {
     throw new ValidationError("periodDays must be a positive integer")
   }
-  if (cycleLengthDays != null && (!Number.isInteger(cycleLengthDays) || cycleLengthDays <= 0)) {
+  if (
+    cycleLengthDays != null &&
+    (!Number.isInteger(cycleLengthDays) || cycleLengthDays <= 0)
+  ) {
     throw new ValidationError("cycleLengthDays must be a positive integer")
   }
   await setMenstrualSettings(req.user!.id, { periodDays, cycleLengthDays })
   res.json({ success: true })
-})
-
-router.post("/day-flow", async (req: Request, res: Response) => {
-  const { date, intensity, note } = req.body
-  if (!date) throw new ValidationError("date is required")
-  await setDayFlow(req.user!.id, date, intensity || "moderate", note || null)
-  res.status(201).json({ success: true })
 })
 
 export default router

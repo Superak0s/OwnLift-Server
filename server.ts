@@ -5,6 +5,7 @@ import cors from "cors"
 import helmet from "helmet"
 import rateLimit from "express-rate-limit"
 import { randomUUID } from "crypto"
+import { pathToFileURL } from "url"
 import { Bonjour, type Service } from "bonjour-service"
 import packageJson from "./package.json" with { type: "json" }
 import { startStaleSessionCleanup, stopStaleSessionCleanup } from "./jobs/sessionCleanup.js"
@@ -36,7 +37,7 @@ declare global {
   }
 }
 
-const app = express()
+export const app = express()
 const PORT = process.env.PORT || 5000
 
 // Without this, req.ip resolves to the proxy's socket address for every
@@ -77,12 +78,24 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 })
 
 app.use((req: Request, _res: Response, next: NextFunction) => {
-  logger.info(`[${req.method}] ${req.path}`, {
-    auth: req.headers.authorization ? "present" : "missing",
-    reqId: req.reqId,
-  })
+  if (req.path !== "/healthz") {
+    logger.info(`[${req.method}] ${req.path}`, {
+      auth: req.headers.authorization ? "present" : "missing",
+      reqId: req.reqId,
+    })
+  }
   next()
 })
+
+// Loopback/private-range check for RATE_LIMIT_BYPASS_LOCAL_IPS — trust proxy
+// is set above, so req.ip is already the real client IP, not the proxy's.
+const isLocalIp = (ip: string) =>
+  /^(127\.|10\.|192\.168\.|::1$|::ffff:127\.|::ffff:10\.|::ffff:192\.168\.)/.test(
+    ip,
+  ) ||
+  /^(172\.(1[6-9]|2\d|3[01])\.|::ffff:172\.(1[6-9]|2\d|3[01])\.)/.test(ip)
+
+const bypassLocalIps = process.env.RATE_LIMIT_BYPASS_LOCAL_IPS === "true"
 
 // Strict limiter on auth endpoints to blunt credential stuffing / brute force,
 // plus a broad limiter across the rest of the API to curb abuse and scraping.
@@ -92,6 +105,10 @@ const limiter = (windowMs: number, max: number) =>
     max,
     standardHeaders: true,
     legacyHeaders: false,
+    // The suite hammers these endpoints from one IP; the limiter is a
+    // production protection, not something worth mocking around.
+    skip: (req) =>
+      !!process.env.VITEST || (bypassLocalIps && isLocalIp(req.ip ?? "")),
     message: {
       success: false,
       error: "Too many requests, please try again later",
@@ -119,7 +136,6 @@ app.use((_req: Request, res: Response) => {
 app.use(errorHandler)
 
 const server = http.createServer(app)
-createWsServer(server)
 
 // Advertised unconditionally — a client on the same LAN can find this box even
 // without SERVER_FQDN set; on a cloud/Docker host it's simply unreachable via
@@ -138,18 +154,24 @@ function getLanInterface(): string | undefined {
   return undefined
 }
 
-// `interface` is a real multicast-dns option that bonjour-service forwards
-// but omits from its own (mistyped) ServiceConfig.
-const bonjour = new Bonjour({ interface: getLanInterface() } as ConstructorParameters<typeof Bonjour>[0])
+// Created in start() (not at import time) so importing app in tests doesn't
+// open a multicast socket. `interface` is a real multicast-dns option that
+// bonjour-service forwards but omits from its own (mistyped) ServiceConfig.
+let bonjour: Bonjour | undefined
 let mdnsService: Service | undefined
 
 async function start() {
   await testDatabaseConnection()
+  createWsServer(server)
+  const b = new Bonjour({
+    interface: getLanInterface(),
+  } as ConstructorParameters<typeof Bonjour>[0])
+  bonjour = b
   server.listen(PORT, () => {
     logger.info(`🚀 OwnLift Server v${packageJson.version} running on port ${PORT}`)
     startStaleSessionCleanup()
 
-    mdnsService = bonjour.publish({
+    mdnsService = b.publish({
       name: "OwnLift Server",
       type: "ownlift",
       port: Number(PORT),
@@ -163,16 +185,11 @@ async function start() {
   })
 }
 
-start().catch((err) => {
-  logger.error("Failed to start server:", err)
-  process.exit(1)
-})
-
 function shutdown(exitCode: number) {
   closeWsServer()
   stopStaleSessionCleanup()
   if (mdnsService) mdnsService.stop()
-  bonjour.destroy()
+  bonjour?.destroy()
   server.close(async () => {
     try {
       await pool.end()
@@ -183,21 +200,35 @@ function shutdown(exitCode: number) {
   })
 }
 
-process.on("SIGTERM", () => {
-  logger.info("SIGTERM received — shutting down gracefully")
-  shutdown(0)
-})
+// Only boot when run directly (node server.ts / tsx server.ts), so tests can
+// import app without side effects. pathToFileURL makes relative launch
+// scripts (e.g. `tsx server.ts`) compare equal to import.meta.url.
+const isMain =
+  process.argv[1] != null &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
 
-process.on("SIGINT", () => {
-  shutdown(0)
-})
+if (isMain) {
+  start().catch((err) => {
+    logger.error("Failed to start server:", err)
+    process.exit(1)
+  })
 
-process.on("unhandledRejection", (reason) => {
-  logger.error("Unhandled promise rejection:", reason)
-  shutdown(1)
-})
+  process.on("SIGTERM", () => {
+    logger.info("SIGTERM received — shutting down gracefully")
+    shutdown(0)
+  })
 
-process.on("uncaughtException", (err) => {
-  logger.error("Uncaught exception:", err)
-  shutdown(1)
-})
+  process.on("SIGINT", () => {
+    shutdown(0)
+  })
+
+  process.on("unhandledRejection", (reason) => {
+    logger.error("Unhandled promise rejection:", reason)
+    shutdown(1)
+  })
+
+  process.on("uncaughtException", (err) => {
+    logger.error("Uncaught exception:", err)
+    shutdown(1)
+  })
+}

@@ -33,9 +33,6 @@ const router: Router = Router()
 
 router.use(authenticateToken)
 
-// Max size for a shared program payload stored in sharing_permissions.payload
-const MAX_PROGRAM_PAYLOAD_BYTES = 512 * 1024
-
 router.post("/permissions", async (req: Request, res: Response) => {
   const { friendId, permissionType, payload } = req.body
 
@@ -46,15 +43,6 @@ router.post("/permissions", async (req: Request, res: Response) => {
     throw new ValidationError(
       "payload.programData is required for program permission",
     )
-  }
-  // Guard against storing arbitrarily large payloads, for any permission type
-  if (payload) {
-    const payloadSize = Buffer.byteLength(JSON.stringify(payload), "utf8")
-    if (payloadSize > MAX_PROGRAM_PAYLOAD_BYTES) {
-      throw new ValidationError(
-        `Payload exceeds the ${MAX_PROGRAM_PAYLOAD_BYTES / 1024} KB limit`,
-      )
-    }
   }
 
   const parsedFriendId = parseIntParam(String(friendId), "friendId")

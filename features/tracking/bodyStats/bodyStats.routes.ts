@@ -68,11 +68,16 @@ router.post("/bodyfat/log", async (req: Request, res: Response) => {
 
   const { waist, neck, hip, unit } = measurements
 
+  // The client only sends gender when it differs from the profile, so fall
+  // back to the stored one — the formula picks a different branch per sex.
+  const userData = await getUserBodyData(userId)
+  const sex: "male" | "female" = gender ?? userData.gender
+
   if (!waist || waist <= 0)
     throw new ValidationError("Invalid waist measurement")
   if (!neck || neck <= 0)
     throw new ValidationError("Invalid neck measurement")
-  if (gender === "female" && (!hip || hip <= 0)) {
+  if (sex === "female" && (!hip || hip <= 0)) {
     throw new ValidationError(
       "Invalid hip measurement (required for females)",
     )
@@ -94,15 +99,14 @@ router.post("/bodyfat/log", async (req: Request, res: Response) => {
     )
   }
 
-  const userData = await getUserBodyData(userId)
-  if (!userData || !userData.heightCm) {
+  if (!userData.heightCm) {
     throw new ValidationError(
       "User height not set. Please set your height in settings first.",
     )
   }
 
   const calculatedPercentage = calculateBodyFatPercentage(
-    gender,
+    sex,
     userData.heightCm,
     waistCm,
     neckCm,
@@ -127,20 +131,7 @@ router.post("/bodyfat/log", async (req: Request, res: Response) => {
     calculatedAt || new Date().toISOString(),
   )
 
-  res.json({
-    success: true,
-    entry: {
-      id: (entry as any).id,
-      percentage: (entry as any).percentage,
-      measurements: {
-        waist: (entry as any).waist_cm,
-        neck: (entry as any).neck_cm,
-        hip: (entry as any).hip_cm,
-        unit: "cm",
-      },
-      calculatedAt: (entry as any).calculated_at,
-    },
-  })
+  res.json({ success: true, entry })
 })
 
 router.get("/bodyfat/log", async (req: Request, res: Response) => {

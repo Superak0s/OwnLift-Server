@@ -11,6 +11,7 @@
 */
 
 
+import { pathToFileURL } from "url"
 import {
   findUserByUsername,
   setUserAdmin,
@@ -19,7 +20,7 @@ import {
 } from "./features/auth/auth.model.js"
 import { listReports } from "./features/social/friends/friends.model.js"
 
-async function main() {
+export async function main(): Promise<number> {
   const args = process.argv.slice(2)
   const cmd = args[0]
 
@@ -31,7 +32,7 @@ async function main() {
     console.log("  remove <username>        Revoke admin from a user")
     console.log("  passwd <username> <pw>   Set a user's password (account recovery)")
     console.log("  reports [limit]          List user reports filed on this instance")
-    process.exit(0)
+    return 0
   }
 
   try {
@@ -39,59 +40,59 @@ async function main() {
       const admins = await listAdmins()
       if (!admins.length) {
         console.log("No admin users found")
-        process.exit(0)
+        return 0
       }
       console.log("Admin users:")
       for (const a of admins) {
         console.log(
-          `- id=${a.id} username=${a.username} email=${a.email} name=${a.name} created_at=${a.created_at.toString()}`,
+          `- id=${a.id} username=${a.username} email=${a.email} name=${a.name} createdAt=${a.createdAt.toString()}`,
         )
       }
-      process.exit(0)
+      return 0
     }
 
     if (cmd === "add" || cmd === "remove") {
       const username = args[1]
       if (!username) {
         console.error("Username required")
-        process.exit(2)
+        return 2
       }
       const user = await findUserByUsername(username)
       if (!user) {
         console.error(`User not found: ${username}`)
-        process.exit(2)
+        return 2
       }
       const ok = await setUserAdmin(user.id, cmd === "add")
       if (!ok) {
         console.error("Failed to update user admin status")
-        process.exit(1)
+        return 1
       }
       console.log(`User ${username} admin=${cmd === "add"}`)
-      process.exit(0)
+      return 0
     }
 
     if (cmd === "passwd") {
       const [username, newPassword] = args.slice(1)
       if (!username || !newPassword) {
         console.error("Usage: ownlift passwd <username> <newpassword>")
-        process.exit(2)
+        return 2
       }
       if (newPassword.length < 8 || !/[A-Za-z]/.test(newPassword) || !/\d/.test(newPassword)) {
         console.error(
           "Password must be at least 8 characters and include a letter and a number",
         )
-        process.exit(2)
+        return 2
       }
       const user = await findUserByUsername(username)
       if (!user) {
         console.error(`User not found: ${username}`)
-        process.exit(2)
+        return 2
       }
       // changePassword bumps token_version, so every device signed in as this
       // user is signed out — which is what you want after a recovery reset.
       await changePassword(user.id, newPassword)
       console.log(`Password reset for ${username}. All existing sessions were signed out.`)
-      process.exit(0)
+      return 0
     }
 
     if (cmd === "reports") {
@@ -99,24 +100,30 @@ async function main() {
       const reports = await listReports(isNaN(limit) ? 100 : limit)
       if (!reports.length) {
         console.log("No reports filed")
-        process.exit(0)
+        return 0
       }
       console.log(`${reports.length} report(s), newest first:`)
       for (const r of reports) {
         console.log(
-          `- #${r.id} ${r.created_at.toISOString()} ${r.reporter_username} reported ${r.reported_username} (${r.reason})`,
+          `- #${r.id} ${r.created_at} ${r.reporter_username} reported ${r.reported_username} (${r.reason})`,
         )
         if (r.details) console.log(`    ${r.details}`)
       }
-      process.exit(0)
+      return 0
     }
 
     console.error("Unknown command")
-    process.exit(2)
+    return 2
   } catch (err) {
     console.error("Error:", (err as Error).message)
-    process.exit(1)
+    return 1
   }
 }
 
-main()
+// Only run when launched directly, so tests can import main() without side
+// effects. pathToFileURL makes relative launch scripts compare equal.
+const isMain =
+  process.argv[1] != null &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+
+if (isMain) void main().then((code) => process.exit(code))

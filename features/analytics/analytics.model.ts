@@ -29,7 +29,7 @@ export async function getAnalytics(
       MAX(s.start_time) AS last_session
     FROM sessions s
     LEFT JOIN set_timings st ON s.id = st.session_id
-    WHERE s.user_id = ? AND s.is_admin = 0 AND s.end_time IS NOT NULL`
+    WHERE s.user_id = ? AND s.end_time IS NOT NULL`
   const params: any[] = [userId]
   if (split) {
     q += ` AND s.\`split\` = ?`

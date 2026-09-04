@@ -3,10 +3,10 @@
 
 export interface WeightEntry {
   id: number
-  weight_kg: number
-  recorded_at: Date
+  weightKg: number
+  recordedAt: Date
   note: string | null
-  created_at: Date
+  createdAt: Date
 }
 
 export interface BodyFatEntry {
@@ -23,8 +23,6 @@ export interface BodyFatEntry {
   method: string
   gender: string
 }
-
-export type FlowIntensity = "light" | "moderate" | "heavy"
 
 export interface MacrosEntry {
   id: number

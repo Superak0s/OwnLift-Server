@@ -3,12 +3,11 @@
 import { pool, formatDateForMySQL } from "@/config/database.js"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
 import { ValidationError } from "@/middleware/errorHandler.js"
-import type { FlowIntensity } from "../tracking.types.js"
 
 interface MenstrualEntry {
   id: number
   cycleStart: Date
-  flowIntensity: FlowIntensity
+  durationDays: number | null
   symptoms?: string[] | null
   createdAt: Date
   updatedAt: Date
@@ -25,7 +24,6 @@ interface CycleStats {
   averageCycleLength: number
   nextPeriodEstimate: Date | null
   lastCycleEntry: MenstrualEntry | null
-  predictedPeriodDates: Date[]
 }
 
 // ─── DB row shapes ────────────────────────────────────────────────────────────
@@ -35,7 +33,6 @@ interface MenstrualRow extends RowDataPacket {
   cycle_start: Date
   cycle_end: Date | null
   duration_days: number | null
-  flow_intensity: FlowIntensity
   symptoms: string | null
   created_at: Date
   updated_at: Date
@@ -46,7 +43,6 @@ interface MenstrualRow extends RowDataPacket {
 export async function logMenstrualCycle(
   userId: number,
   cycleStart: string,
-  flowIntensity: FlowIntensity = "moderate",
   symptoms?: string[] | null,
 ): Promise<number> {
   const start = new Date(cycleStart)
@@ -54,21 +50,12 @@ export async function logMenstrualCycle(
     throw new ValidationError("Invalid cycle start date")
   }
 
-  if (!["light", "moderate", "heavy"].includes(flowIntensity)) {
-    throw new ValidationError("Flow intensity must be: light, moderate, or heavy")
-  }
-
   const symptomsJson = symptoms ? JSON.stringify(symptoms) : null
 
   const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO menstrual_cycle (user_id, cycle_start, flow_intensity, symptoms)
-     VALUES (?, ?, ?, ?)`,
-    [
-      userId,
-      formatDateForMySQL(cycleStart),
-      flowIntensity,
-      symptomsJson,
-    ],
+    `INSERT INTO menstrual_cycle (user_id, cycle_start, symptoms)
+     VALUES (?, ?, ?)`,
+    [userId, formatDateForMySQL(cycleStart), symptomsJson],
   )
   return result.insertId
 }
@@ -78,7 +65,7 @@ export async function getMenstrualHistory(
   limit = 12,
 ): Promise<MenstrualEntry[]> {
   const [rows] = await pool.execute<MenstrualRow[]>(
-    `SELECT id, cycle_start, cycle_end, duration_days, flow_intensity, symptoms, created_at, updated_at
+    `SELECT id, cycle_start, cycle_end, duration_days, symptoms, created_at, updated_at
      FROM menstrual_cycle WHERE user_id = ? ORDER BY cycle_start DESC LIMIT ?`,
     [userId, limit],
   )
@@ -89,7 +76,7 @@ async function getLastMenstrualCycle(
   userId: number,
 ): Promise<MenstrualEntry | null> {
   const [rows] = await pool.execute<MenstrualRow[]>(
-    `SELECT id, cycle_start, cycle_end, duration_days, flow_intensity, symptoms, created_at, updated_at
+    `SELECT id, cycle_start, cycle_end, duration_days, symptoms, created_at, updated_at
      FROM menstrual_cycle WHERE user_id = ? ORDER BY cycle_start DESC LIMIT 1`,
     [userId],
   )
@@ -133,21 +120,29 @@ export async function getCycleStats(userId: number): Promise<CycleStats> {
       currentPhase = {
         phase: "menstruation",
         daysInPhase: daysSinceStart,
-        estimatedEnd: new Date(cycleStartDate.getTime() + menstruationDays * 24 * 60 * 60 * 1000),
+        estimatedEnd: new Date(
+          cycleStartDate.getTime() + menstruationDays * 24 * 60 * 60 * 1000,
+        ),
       }
     } else if (daysSinceStart <= menstruationDays + 7) {
       // follicular
       currentPhase = {
         phase: "follicular",
         daysInPhase: daysSinceStart - menstruationDays,
-        estimatedEnd: new Date(cycleStartDate.getTime() + (menstruationDays + 7) * 24 * 60 * 60 * 1000),
+        estimatedEnd: new Date(
+          cycleStartDate.getTime() +
+            (menstruationDays + 7) * 24 * 60 * 60 * 1000,
+        ),
       }
     } else if (daysSinceStart <= menstruationDays + 11) {
       // ovulation window
       currentPhase = {
         phase: "ovulation",
         daysInPhase: daysSinceStart - (menstruationDays + 7),
-        estimatedEnd: new Date(cycleStartDate.getTime() + (menstruationDays + 11) * 24 * 60 * 60 * 1000),
+        estimatedEnd: new Date(
+          cycleStartDate.getTime() +
+            (menstruationDays + 11) * 24 * 60 * 60 * 1000,
+        ),
       }
     } else {
       currentPhase = {
@@ -163,7 +158,6 @@ export async function getCycleStats(userId: number): Promise<CycleStats> {
     averageCycleLength: Math.round(avgCycleLength),
     nextPeriodEstimate,
     lastCycleEntry: last,
-    predictedPeriodDates: [],
   }
 }
 
@@ -235,7 +229,7 @@ function formatEntry(row: MenstrualRow): MenstrualEntry {
   return {
     id: row.id,
     cycleStart: row.cycle_start,
-    flowIntensity: row.flow_intensity,
+    durationDays: row.duration_days,
     symptoms: row.symptoms ? JSON.parse(row.symptoms) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

@@ -33,7 +33,8 @@ export async function getWeightHistory(
   limit = 90,
 ): Promise<WeightEntry[]> {
   const [rows] = await pool.execute<(WeightEntry & RowDataPacket)[]>(
-    `SELECT id, weight_kg, recorded_at, note, created_at FROM body_weight WHERE user_id = ? ORDER BY recorded_at DESC LIMIT ?`,
+    `SELECT id, weight_kg AS weightKg, recorded_at AS recordedAt, note, created_at AS createdAt
+     FROM body_weight WHERE user_id = ? ORDER BY recorded_at DESC LIMIT ?`,
     [userId, limit],
   )
   return rows
@@ -49,9 +50,9 @@ export async function deleteWeightEntry(
 
 export async function getCurrentWeight(
   userId: number,
-): Promise<Pick<WeightEntry, "weight_kg" | "recorded_at"> | null> {
-  const [rows] = await pool.execute<(Pick<WeightEntry, "weight_kg" | "recorded_at"> & RowDataPacket)[]>(
-    `SELECT weight_kg, recorded_at FROM body_weight WHERE user_id = ? ORDER BY recorded_at DESC LIMIT 1`,
+): Promise<Pick<WeightEntry, "weightKg" | "recordedAt"> | null> {
+  const [rows] = await pool.execute<(Pick<WeightEntry, "weightKg" | "recordedAt"> & RowDataPacket)[]>(
+    `SELECT weight_kg AS weightKg, recorded_at AS recordedAt FROM body_weight WHERE user_id = ? ORDER BY recorded_at DESC LIMIT 1`,
     [userId],
   )
   return rows[0] ?? null

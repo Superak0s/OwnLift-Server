@@ -14,10 +14,12 @@ const MAX_LENGTHS = {
   name: 128,
   dayTitle: 255,
   exerciseName: 255,
-  muscleGroup: 128,
   note: 1000,
   time: 8,
+  machineName: 100,
 } as const
+
+const MUSCLE_NAME_MAX = 128
 
 /**
  * Parse a path param / body field that must be an integer id, rejecting
@@ -85,6 +87,28 @@ function checkMaxLength(
     : null
 }
 
+/**
+ * Check an optional muscle-group array (primaryMuscles / secondaryMuscles):
+ * an array of non-empty strings, each capped like the old single-group field.
+ */
+function checkMuscleArray(
+  value: unknown,
+  field: "primaryMuscles" | "secondaryMuscles",
+  errors: string[],
+): void {
+  if (value == null) return
+  const ok =
+    Array.isArray(value) &&
+    value.every(
+      (g) =>
+        typeof g === "string" && !!g.trim() && g.length <= MUSCLE_NAME_MAX,
+    )
+  if (!ok)
+    errors.push(
+      `${field} must be an array of non-empty strings (max ${MUSCLE_NAME_MAX} chars each)`,
+    )
+}
+
 /** Reject requests that are missing any of the listed body fields. */
 export function validateRequired(requiredFields: string[]) {
   return (req: Request, _res: Response, next: NextFunction): void => {
@@ -130,7 +154,9 @@ export function validateRegistration(
     errors.push("Password is required")
   } else {
     if (!validatePassword(password))
-      errors.push("Password must be at least 8 characters")
+      errors.push(
+        "Password must be at least 8 characters and contain a letter and a number",
+      )
     const lenErr = checkMaxLength(password, "password")
     if (lenErr) errors.push(lenErr)
   }
@@ -223,7 +249,7 @@ export function validateSessionCreation(
   _res: Response,
   next: NextFunction,
 ): void {
-  const { dayNumber, dayTitle, muscleGroups } = req.body
+  const { dayNumber, dayTitle, primaryMuscles, secondaryMuscles } = req.body
   const errors: string[] = []
 
   if (!validateInteger(dayNumber) || dayNumber < 1)
@@ -236,8 +262,8 @@ export function validateSessionCreation(
     if (lenErr) errors.push(lenErr)
   }
 
-  if (!Array.isArray(muscleGroups))
-    errors.push("Muscle groups must be an array")
+  checkMuscleArray(primaryMuscles, "primaryMuscles", errors)
+  checkMuscleArray(secondaryMuscles, "secondaryMuscles", errors)
 
   if (errors.length > 0)
     throw new ValidationError("Invalid session data", errors)
@@ -258,7 +284,8 @@ export function validateSetTiming(
 ): void {
   const {
     exerciseName,
-    muscleGroup,
+    primaryMuscles,
+    secondaryMuscles,
     setIndex,
     startTime,
     endTime,
@@ -266,6 +293,7 @@ export function validateSetTiming(
     reps,
     note,
     isWarmup,
+    machineName,
   } = req.body
   const errors: string[] = []
 
@@ -277,14 +305,8 @@ export function validateSetTiming(
       if (lenErr) errors.push(lenErr)
     }
   }
-  if (muscleGroup != null) {
-    if (typeof muscleGroup !== "string")
-      errors.push("Muscle group must be a string")
-    else {
-      const lenErr = checkMaxLength(muscleGroup, "muscleGroup")
-      if (lenErr) errors.push(lenErr)
-    }
-  }
+  checkMuscleArray(primaryMuscles, "primaryMuscles", errors)
+  checkMuscleArray(secondaryMuscles, "secondaryMuscles", errors)
   if (setIndex !== undefined && (!validateInteger(setIndex) || setIndex < 0))
     errors.push("Set index must be a non-negative integer")
   if (startTime !== undefined && !validateISODate(startTime))
@@ -304,6 +326,15 @@ export function validateSetTiming(
   }
   if (isWarmup !== undefined && typeof isWarmup !== "boolean")
     errors.push("isWarmup must be a boolean")
+  // Free text from the user — only the column width matters.
+  if (machineName != null) {
+    if (typeof machineName !== "string")
+      errors.push("machineName must be a string")
+    else {
+      const lenErr = checkMaxLength(machineName, "machineName")
+      if (lenErr) errors.push(lenErr)
+    }
+  }
 
   if (errors.length > 0)
     throw new ValidationError("Invalid set timing data", errors)

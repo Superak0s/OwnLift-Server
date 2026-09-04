@@ -134,8 +134,8 @@ router.post("/request", async (req: Request, res: Response) => {
   res.status(201).json({
     success: true,
     message: "Friend request sent",
-    friendship_id: friendshipId,
-    to_user: {
+    friendshipId,
+    toUser: {
       id: targetUser.id,
       username: targetUser.username,
       name: targetUser.name,
@@ -230,7 +230,7 @@ router.post("/report", async (req: Request, res: Response) => {
   res.status(201).json({
     success: true,
     message: "Report submitted",
-    report_id: reportId,
+    reportId,
   })
 })
 

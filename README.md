@@ -134,6 +134,7 @@ Set these environment variables. A `.env` file is read by Node directly — the 
 | `ALLOWED_ORIGINS` | **yes**  | —           | Comma-separated CORS origins                                       |
 | `NODE_ENV`        | no       | —           | `production` masks error details; `development` shows stack traces |
 | `SERVER_FQDN`     | no       | —           | Public domain name; advertised over mDNS (`_ownlift._tcp`) so clients that find this server on the LAN can connect via this FQDN instead of the raw IP |
+| `RATE_LIMIT_BYPASS_LOCAL_IPS` | no | `false` | `true` skips the rate limiters for loopback/private-range client IPs (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) |
 
 > ⚠️ **Security:** do not commit real secrets. Rotate any credentials that have been checked into `.env`, and keep `.env` out of version control.
 

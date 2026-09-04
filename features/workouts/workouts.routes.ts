@@ -18,8 +18,8 @@ import {
   endSession,
   getSessionDetails,
   getSessionHistory,
-  clearAdminSessions,
   deleteAllSessionsForSplit,
+  deleteDemoSessions,
   updateSessionSplit,
 } from "./workouts.model.js"
 import { getFriendSessionDetails } from "../social/sharing/sharing.model.js"
@@ -31,14 +31,13 @@ router.use(authenticateToken)
 async function requireOwnSession(
   sessionId: number,
   userId: number,
-): Promise<{ id: number; is_admin: number }> {
+): Promise<void> {
   const [rows] = await pool.execute<any[]>(
-    "SELECT id, is_admin FROM sessions WHERE id = ? AND user_id = ?",
+    "SELECT id FROM sessions WHERE id = ? AND user_id = ?",
     [sessionId, userId],
   )
   if (rows.length === 0)
     throw new ForbiddenError("Session not found or unauthorized")
-  return rows[0]
 }
 
 router.get("/", async (req: Request, res: Response) => {
@@ -58,16 +57,17 @@ router.get("/", async (req: Request, res: Response) => {
 
 router.post("/start", validateSessionCreation, async (req: Request, res: Response) => {
   const userId = req.user!.id
-  const { dayNumber, dayTitle, muscleGroups, isAdmin } = req.body
+  const { dayNumber, dayTitle, primaryMuscles, secondaryMuscles } = req.body
   const split = req.body.split
 
   const newSessionId: number = await createSession(
     userId,
     dayNumber,
     dayTitle,
-    muscleGroups,
-    isAdmin || false,
+    primaryMuscles ?? [],
+    secondaryMuscles ?? [],
     req.body.startTime || null,
+    req.body.isDemo === true,
   )
 
   if (split) {
@@ -76,14 +76,12 @@ router.post("/start", validateSessionCreation, async (req: Request, res: Respons
 
   const session = await getSessionDetails(newSessionId, userId)
 
-  if (!isAdmin) {
-    pushSessionStatusToWatchers(
-      userId,
-      req.user!.username,
-      newSessionId,
-      "friend_session_started",
-    )
-  }
+  pushSessionStatusToWatchers(
+    userId,
+    req.user!.username,
+    newSessionId,
+    "friend_session_started",
+  )
 
   res.json({ success: true, session: { ...session, id: newSessionId } })
 })
@@ -96,7 +94,7 @@ router.post("/start", validateSessionCreation, async (req: Request, res: Respons
  */
 router.post("/rename-exercise", async (req: Request, res: Response) => {
   const userId = req.user!.id
-  const { oldName, newName, muscleGroup } = req.body
+  const { oldName, newName, primaryMuscles, secondaryMuscles } = req.body
   const split = req.body.split
 
   if (!split || typeof oldName !== "string" || !oldName.trim()) {
@@ -108,7 +106,8 @@ router.post("/rename-exercise", async (req: Request, res: Response) => {
     split,
     oldName.trim(),
     newName,
-    muscleGroup,
+    primaryMuscles,
+    secondaryMuscles,
   )
   res.json({ success: true, updatedCount })
 })
@@ -128,7 +127,9 @@ router.post("/:sessionId/set", validateRequired(["exerciseName", "setIndex", "st
     reps,
     note,
     isWarmup,
-    muscleGroup,
+    primaryMuscles,
+    secondaryMuscles,
+    machineName,
   } = req.body
 
   await requireOwnSession(sessionId, userId)
@@ -143,7 +144,9 @@ router.post("/:sessionId/set", validateRequired(["exerciseName", "setIndex", "st
     reps || 0,
     note || null,
     isWarmup || false,
-    muscleGroup || null,
+    primaryMuscles ?? [],
+    secondaryMuscles ?? [],
+    machineName || null,
   )
 
   pushLiveUpdateToWatchers(userId, sessionId).catch((err: Error) =>
@@ -166,17 +169,15 @@ router.post("/:sessionId/end", async (req: Request, res: Response) => {
   const userId = req.user!.id
   const sessionId = parseIntParam(String(req.params.sessionId), "session ID")
 
-  const row = await requireOwnSession(sessionId, userId)
+  await requireOwnSession(sessionId, userId)
   const session = await endSession(sessionId, req.body.endTime || null)
 
-  if (!row.is_admin) {
-    pushSessionStatusToWatchers(
-      userId,
-      req.user!.username,
-      null,
-      "friend_session_ended",
-    )
-  }
+  pushSessionStatusToWatchers(
+    userId,
+    req.user!.username,
+    null,
+    "friend_session_ended",
+  )
 
   res.json({ success: true, session })
 })
@@ -189,18 +190,13 @@ router.get("/:sessionId", async (req: Request, res: Response) => {
   res.json({ success: true, session })
 })
 
-// NOTE: Static paths (/admin, /split/:split, /) MUST come before the
-// dynamic /:sessionId routes so Express doesn't treat "admin" as a session ID.
+// NOTE: Static paths (/split/:split, /) MUST come before the dynamic
+// /:sessionId routes so Express doesn't treat the literal as a session ID.
 
-router.delete("/admin", async (req: Request, res: Response) => {
+router.delete("/demo", async (req: Request, res: Response) => {
   const userId = req.user!.id
-  const deletedCount: number = await clearAdminSessions(userId)
-
-  res.json({
-    success: true,
-    message: `Deleted ${deletedCount} admin session(s)`,
-    deletedCount,
-  })
+  const deletedCount = await deleteDemoSessions(userId)
+  res.json({ success: true, deletedCount })
 })
 
 router.delete("/split/:split", async (req: Request, res: Response) => {

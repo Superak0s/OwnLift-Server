@@ -1,13 +1,15 @@
 {
   "name": "ownlift-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Node.js server for processing workout files and splitting exercises by day",
   "main": "server.js",
   "scripts": {
-    "build": "tsc && tsc-alias && cp config/schema.sql dist/config/schema.sql && cp -r migrations dist/migrations",
+    "build": "tsc && tsc-alias && cp config/schema.sql dist/config/schema.sql && cp -r migrations/. dist/migrations",
     "dev": "tsx watch --env-file-if-exists=.env server.ts",
     "start": "node --env-file-if-exists=.env dist/server.js",
-    "ownlift": "tsx --env-file-if-exists=.env ownlift.ts"
+    "ownlift": "tsx --env-file-if-exists=.env ownlift.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [
     "workout",
@@ -37,9 +39,13 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.2.0",
     "@types/node": "^24.13.3",
+    "@types/supertest": "^7.2.1",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.1.11",
+    "supertest": "^7.2.2",
     "tsc-alias": "^1.9.2",
     "tsx": "^4.23.11",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
   }
 }

@@ -5,35 +5,39 @@ import { NotFoundError, ForbiddenError } from "@/middleware/errorHandler.js"
 
 interface SetTiming {
   id: number
-  session_id: number
-  exercise_id: number
-  exercise_name: string
-  exercise_muscle_group: string | null
-  set_index: number
-  start_time: string
-  end_time: string
-  set_duration: number
-  rest_time: number | null
+  sessionId: number
+  exerciseId: number
+  exerciseIndex: number | null
+  exerciseName: string
+  exercisePrimaryMuscles: string[] | null
+  exerciseSecondaryMuscles: string[] | null
+  setIndex: number
+  startTime: string
+  endTime: string
+  setDuration: number
+  restTime: number | null
   weight: number
   reps: number
   note: string | null
-  is_warmup: number
+  isWarmup: number
+  machineName: string | null
 }
 
 export interface Session {
   id: number
-  user_id: number
-  day_number: number
-  day_title: string
-  muscle_groups: string[]
-  start_time: string
-  end_time: string | null
-  total_duration: number | null
-  completed_sets: number
-  is_admin: number
+  userId: number
+  dayNumber: number
+  dayTitle: string
+  primaryMuscles: string[]
+  secondaryMuscles: string[]
+  startTime: string
+  endTime: string | null
+  totalDuration: number | null
+  completedSets: number
   split: string | null
-  user_name: string
-  set_timings: SetTiming[]
+  isDemo: boolean
+  userName: string
+  setTimings: SetTiming[]
 }
 
 interface RecordSetResult {
@@ -41,52 +45,75 @@ interface RecordSetResult {
   exerciseId: number
   setDuration: number
   restTime: number | null
+  machineName: string | null
 }
+
+// The API speaks camelCase, MySQL speaks snake_case. Every session/set read
+// aliases its columns here so rows can go straight to res.json() without a
+// mapping layer — alias any new column the same way.
+const SESSION_COLS = `s.id, s.user_id AS userId, s.day_number AS dayNumber,
+  s.day_title AS dayTitle, s.primary_muscles AS primaryMuscles,
+  s.secondary_muscles AS secondaryMuscles, s.start_time AS startTime,
+  s.end_time AS endTime, s.total_duration AS totalDuration,
+  s.completed_sets AS completedSets, s.\`split\`, s.is_demo AS isDemo`
+
+const TIMING_COLS = `st.id, st.session_id AS sessionId, st.exercise_id AS exerciseId,
+  st.exercise_index AS exerciseIndex, st.set_index AS setIndex,
+  st.start_time AS startTime, st.end_time AS endTime,
+  st.set_duration AS setDuration, st.rest_time AS restTime,
+  st.weight, st.reps, st.note, st.is_warmup AS isWarmup,
+  st.machine_name AS machineName, e.name AS exerciseName,
+  e.primary_muscles AS exercisePrimaryMuscles,
+  e.secondary_muscles AS exerciseSecondaryMuscles`
 
 interface SessionRow extends RowDataPacket {
   id: number
-  user_id: number
-  day_number: number
-  day_title: string
+  userId: number
+  dayNumber: number
+  dayTitle: string
   // JSON column — mysql2 auto-parses this to string[] for most rows, but
   // some legacy rows hold a plain comma-joined string. See parseMuscleGroups.
-  muscle_groups: string | string[]
-  start_time: Date | string
-  end_time: Date | string | null
-  total_duration: number | null
-  completed_sets: number
-  is_admin: number
+  primaryMuscles: string | string[]
+  secondaryMuscles: string | string[]
+  startTime: Date | string
+  endTime: Date | string | null
+  totalDuration: number | null
+  completedSets: number
   split: string | null
-  user_name: string
+  userName: string
   username: string
-  set_count?: number
+  setCount?: number
 }
 
 interface SetTimingRow extends RowDataPacket {
   id: number
-  session_id: number
-  exercise_id: number
-  exercise_name: string
-  exercise_muscle_group: string | null
-  set_index: number
-  start_time: Date | string
-  end_time: Date | string
-  set_duration: number
-  rest_time: number | null
+  sessionId: number
+  exerciseId: number
+  exerciseIndex: number | null
+  exerciseName: string
+  exercisePrimaryMuscles: string[] | null
+  exerciseSecondaryMuscles: string[] | null
+  setIndex: number
+  startTime: Date | string
+  endTime: Date | string
+  setDuration: number
+  restTime: number | null
   weight: number
   reps: number
   note: string | null
-  is_warmup: number
+  isWarmup: number
+  machineName: string | null
 }
 
 /**
- * Parse the `sessions.muscle_groups` column into a string[].
+ * Parse the `primary_muscles` / `secondary_muscles` JSON columns into a
+ * string[].
  *
- * `muscle_groups` is a MySQL JSON column, and mysql2 auto-parses JSON-typed
- * columns for you — so most rows arrive here as an actual array already,
- * not a string. Some older rows apparently hold a plain comma-joined string
- * instead (e.g. "Glutes,Hamstrings"), predating whatever migration/version
- * put this column on JSON.stringify'd data.
+ * The columns are MySQL JSON, and mysql2 auto-parses JSON-typed columns for
+ * you — so most rows arrive here as an actual array already, not a string.
+ * Some older rows apparently hold a plain comma-joined string instead (e.g.
+ * "Glutes,Hamstrings"), predating whatever migration/version put this column
+ * on JSON.stringify'd data.
  *
  * This handles all three shapes that can show up: an array (the common
  * case — already parsed by the driver), a JSON-encoded string (in case a
@@ -113,16 +140,17 @@ export function parseMuscleGroups(raw: unknown): string[] {
 
 async function findOrCreateExercise(
   name: string,
-  muscleGroup: string | null = null,
+  primaryMuscles: string[] = [],
+  secondaryMuscles: string[] = [],
 ): Promise<number> {
   // Use LAST_INSERT_ID trick to get the id atomically whether this is an
   // insert or a duplicate-key no-op. Avoids the INSERT IGNORE + SELECT race
   // where two concurrent requests for the same new exercise could both see
   // 0 rows from the follow-up SELECT.
   await pool.execute(
-    `INSERT INTO exercises (name, muscle_group) VALUES (?, ?)
+    `INSERT INTO exercises (name, primary_muscles, secondary_muscles) VALUES (?, ?, ?)
      ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
-    [name, muscleGroup],
+    [name, JSON.stringify(primaryMuscles), JSON.stringify(secondaryMuscles)],
   )
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT LAST_INSERT_ID() AS id`,
@@ -134,20 +162,22 @@ export async function createSession(
   userId: number,
   dayNumber: number,
   dayTitle: string,
-  muscleGroups: string[],
-  isAdmin = false,
+  primaryMuscles: string[],
+  secondaryMuscles: string[],
   startTime: string | Date | null = null,
+  isDemo = false,
 ): Promise<number> {
   const ts = formatDateForMySQL(startTime ? startTime : new Date())
   const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO sessions (user_id, day_number, day_title, muscle_groups, start_time, is_admin) VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO sessions (user_id, day_number, day_title, primary_muscles, secondary_muscles, start_time, is_demo) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
       userId,
       dayNumber,
       dayTitle,
-      JSON.stringify(muscleGroups),
+      JSON.stringify(primaryMuscles),
+      JSON.stringify(secondaryMuscles),
       ts,
-      isAdmin ? 1 : 0,
+      isDemo ? 1 : 0,
     ],
   )
   return result.insertId
@@ -163,9 +193,15 @@ export async function recordSetTiming(
   reps: number,
   note: string | null = null,
   isWarmup = false,
-  muscleGroup: string | null = null,
+  primaryMuscles: string[] = [],
+  secondaryMuscles: string[] = [],
+  machineName: string | null = null,
 ): Promise<RecordSetResult> {
-  const exerciseId = await findOrCreateExercise(exerciseName, muscleGroup)
+  const exerciseId = await findOrCreateExercise(
+    exerciseName,
+    primaryMuscles,
+    secondaryMuscles,
+  )
   const start = new Date(startTime)
   const end = new Date(endTime)
   const setDuration = Math.round((end.getTime() - start.getTime()) / 1000)
@@ -186,8 +222,8 @@ export async function recordSetTiming(
     await connection.beginTransaction()
 
     const [result] = await connection.execute<ResultSetHeader>(
-      `INSERT INTO set_timings (session_id, exercise_id, set_index, start_time, end_time, set_duration, rest_time, weight, reps, note, is_warmup)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO set_timings (session_id, exercise_id, set_index, start_time, end_time, set_duration, rest_time, weight, reps, note, is_warmup, machine_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sessionId,
         exerciseId,
@@ -200,6 +236,7 @@ export async function recordSetTiming(
         reps,
         note,
         isWarmup ? 1 : 0,
+        machineName,
       ],
     )
     await connection.execute(
@@ -214,6 +251,7 @@ export async function recordSetTiming(
       exerciseId,
       setDuration,
       restTime,
+      machineName,
     }
   } catch (err) {
     await connection.rollback()
@@ -225,13 +263,15 @@ export async function recordSetTiming(
 
 interface UpdateSetTimingParams {
   exerciseName?: string
-  muscleGroup?: string | null
+  primaryMuscles?: string[]
+  secondaryMuscles?: string[]
   weight?: number
   reps?: number
   startTime?: string
   endTime?: string
   note?: string | null
   isWarmup?: boolean
+  machineName?: string | null
 }
 
 /**
@@ -246,7 +286,7 @@ export async function updateSetTiming(
   updates: UpdateSetTimingParams,
 ): Promise<SetTiming> {
   const [owned] = await pool.execute<SetTimingRow[]>(
-    `SELECT st.* FROM set_timings st
+    `SELECT st.start_time AS startTime, st.end_time AS endTime FROM set_timings st
      JOIN sessions s ON st.session_id = s.id
      WHERE st.id = ? AND st.session_id = ? AND s.user_id = ?`,
     [setId, sessionId, userId],
@@ -259,7 +299,8 @@ export async function updateSetTiming(
   if (updates.exerciseName !== undefined) {
     const exerciseId = await findOrCreateExercise(
       updates.exerciseName,
-      updates.muscleGroup ?? null,
+      updates.primaryMuscles ?? [],
+      updates.secondaryMuscles ?? [],
     )
     assignments.push("exercise_id = ?")
     params.push(exerciseId)
@@ -280,6 +321,10 @@ export async function updateSetTiming(
     assignments.push("is_warmup = ?")
     params.push(updates.isWarmup ? 1 : 0)
   }
+  if (updates.machineName !== undefined) {
+    assignments.push("machine_name = ?")
+    params.push(updates.machineName)
+  }
   if (updates.startTime !== undefined) {
     assignments.push("start_time = ?")
     params.push(formatDateForMySQL(updates.startTime))
@@ -289,8 +334,8 @@ export async function updateSetTiming(
     params.push(formatDateForMySQL(updates.endTime))
   }
   if (updates.startTime !== undefined || updates.endTime !== undefined) {
-    const start = new Date(updates.startTime ?? (owned[0].start_time as string))
-    const end = new Date(updates.endTime ?? (owned[0].end_time as string))
+    const start = new Date(updates.startTime ?? (owned[0].startTime as string))
+    const end = new Date(updates.endTime ?? (owned[0].endTime as string))
     assignments.push("set_duration = ?")
     params.push(Math.round((end.getTime() - start.getTime()) / 1000))
   }
@@ -304,7 +349,7 @@ export async function updateSetTiming(
   }
 
   const [updated] = await pool.execute<SetTimingRow[]>(
-    `SELECT st.*, e.name AS exercise_name, e.muscle_group AS exercise_muscle_group
+    `SELECT ${TIMING_COLS}
      FROM set_timings st JOIN exercises e ON st.exercise_id = e.id
      WHERE st.id = ?`,
     [setId],
@@ -324,12 +369,14 @@ export async function renameExerciseInHistory(
   split: string,
   oldName: string,
   newName?: string,
-  muscleGroup?: string | null,
+  primaryMuscles?: string[],
+  secondaryMuscles?: string[],
 ): Promise<number> {
   const targetName = newName?.trim() || oldName
   const targetExerciseId = await findOrCreateExercise(
     targetName,
-    muscleGroup ?? null,
+    primaryMuscles ?? [],
+    secondaryMuscles ?? [],
   )
   const [result] = await pool.execute<ResultSetHeader>(
     `UPDATE set_timings st
@@ -352,10 +399,15 @@ export async function endSession(
     [ts, ts, sessionId],
   )
   const [rows] = await pool.execute<SessionRow[]>(
-    `SELECT * FROM sessions WHERE id = ?`,
+    `SELECT ${SESSION_COLS} FROM sessions s WHERE s.id = ?`,
     [sessionId],
   )
-  return rows[0] as unknown as Session
+  const row = rows[0]
+  return {
+    ...row,
+    primaryMuscles: parseMuscleGroups(row.primaryMuscles),
+    secondaryMuscles: parseMuscleGroups(row.secondaryMuscles),
+  } as unknown as Session
 }
 
 export async function getSessionDetails(
@@ -363,22 +415,23 @@ export async function getSessionDetails(
   userId: number,
 ): Promise<Session> {
   const [sessions] = await pool.execute<SessionRow[]>(
-    `SELECT s.*, u.name AS user_name FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = ? AND s.user_id = ?`,
+    `SELECT ${SESSION_COLS}, u.name AS userName FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = ? AND s.user_id = ?`,
     [sessionId, userId],
   )
   if (!sessions[0])
     throw new ForbiddenError("Session not found or unauthorized")
 
   const [timings] = await pool.execute<SetTimingRow[]>(
-    `SELECT st.*, e.name AS exercise_name, e.muscle_group AS exercise_muscle_group
+    `SELECT ${TIMING_COLS}
      FROM set_timings st JOIN exercises e ON st.exercise_id = e.id
      WHERE st.session_id = ? ORDER BY e.name ASC, st.set_index ASC, st.start_time ASC`,
     [sessionId],
   )
   return {
     ...sessions[0],
-    muscle_groups: parseMuscleGroups(sessions[0].muscle_groups),
-    set_timings: timings,
+    primaryMuscles: parseMuscleGroups(sessions[0].primaryMuscles),
+    secondaryMuscles: parseMuscleGroups(sessions[0].secondaryMuscles),
+    setTimings: timings,
   } as unknown as Session
 }
 
@@ -389,10 +442,10 @@ export async function getSessionHistory(
   limit = 30,
   includeTimings = false,
 ): Promise<Session[]> {
-  let q = `SELECT s.*, u.name AS user_name, u.username,
-      (SELECT COUNT(*) FROM set_timings WHERE session_id = s.id) AS set_count
+  let q = `SELECT ${SESSION_COLS}, u.name AS userName, u.username,
+      (SELECT COUNT(*) FROM set_timings WHERE session_id = s.id) AS setCount
      FROM sessions s JOIN users u ON s.user_id = u.id
-     WHERE s.user_id = ? AND s.is_admin = 0`
+     WHERE s.user_id = ?`
   const params: any[] = [userId]
   if (split) {
     q += ` AND s.\`split\` = ?`
@@ -410,8 +463,9 @@ export async function getSessionHistory(
 
   const sessions: Session[] = rows.map((r) => ({
     ...(r as unknown as Session),
-    muscle_groups: parseMuscleGroups(r.muscle_groups),
-    set_timings: [],
+    primaryMuscles: parseMuscleGroups(r.primaryMuscles),
+    secondaryMuscles: parseMuscleGroups(r.secondaryMuscles),
+    setTimings: [],
   }))
 
   if (includeTimings) {
@@ -419,7 +473,7 @@ export async function getSessionHistory(
     // ids come entirely from our own DB query above — safe to interpolate
     // placeholders. Never use this pattern with user-supplied values.
     const [timings] = await pool.execute<SetTimingRow[]>(
-      `SELECT st.*, e.name AS exercise_name, e.muscle_group AS exercise_muscle_group
+      `SELECT ${TIMING_COLS}
        FROM set_timings st JOIN exercises e ON st.exercise_id = e.id
        WHERE st.session_id IN (${ids.map(() => "?").join(",")})
        ORDER BY st.session_id, st.set_index ASC`,
@@ -427,19 +481,14 @@ export async function getSessionHistory(
     )
     const bySession: Record<number, SetTiming[]> = {}
     for (const t of timings) {
-      if (!bySession[t.session_id]) bySession[t.session_id] = []
-      bySession[t.session_id].push(t as unknown as SetTiming)
+      if (!bySession[t.sessionId]) bySession[t.sessionId] = []
+      bySession[t.sessionId].push(t as unknown as SetTiming)
     }
     sessions.forEach((s) => {
-      s.set_timings = bySession[s.id] || []
+      s.setTimings = bySession[s.id] || []
     })
   }
   return sessions
-}
-
-export async function clearAdminSessions(userId: number): Promise<number> {
-  const [result] = await pool.execute<ResultSetHeader>(`DELETE FROM sessions WHERE is_admin = 1 AND user_id = ?`, [userId])
-  return result.affectedRows
 }
 
 export async function deleteAllSessionsForSplit(
@@ -452,6 +501,16 @@ export async function deleteAllSessionsForSplit(
   const [result] = await pool.execute<ResultSetHeader>(
     `DELETE FROM sessions WHERE user_id = ? AND \`split\` = ?`,
     [userId, split],
+  )
+  return result.affectedRows
+}
+
+export async function deleteDemoSessions(userId: number): Promise<number> {
+  // set_timings rows are covered by ON DELETE CASCADE on fk_st_session, so
+  // deleting the parent sessions rows is the whole job.
+  const [result] = await pool.execute<ResultSetHeader>(
+    `DELETE FROM sessions WHERE user_id = ? AND is_demo = 1`,
+    [userId],
   )
   return result.affectedRows
 }

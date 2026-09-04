@@ -70,16 +70,22 @@ const good = {
 }
 mw(good)() // full create payload passes
 mw({ weight: 60 })() // a lone field passes — that's the update path
+mw({ machineName: "Machine A" })() // free text, only the length cap applies
+mw({ machineName: null })() // null is "no machine", same as absent
 mw({})() // empty patch passes
 
 // ...but a supplied field that is malformed is still rejected on both paths.
 for (const [bad, re] of [
   [{ exerciseName: "  " }, /non-empty string/],
+  [{ primaryMuscles: "Chest" }, /primaryMuscles/],
+  [{ secondaryMuscles: [1] }, /secondaryMuscles/],
   [{ setIndex: -1 }, /non-negative integer/],
   [{ startTime: "not-a-date" }, /start time/],
   [{ weight: -5 }, /positive number/],
   [{ reps: 0 }, /positive integer/],
   [{ isWarmup: "yes" }, /isWarmup/],
+  [{ machineName: 7 }, /machineName must be a string/],
+  [{ machineName: "x".repeat(101) }, /machineName/],
 ] as [Record<string, unknown>, RegExp][]) {
   assert.throws(mw(bad), /Invalid set timing data/, `expected ${JSON.stringify(bad)} to be rejected`)
   const err = (() => { try { mw(bad)() } catch (e) { return e } })() as { details: string[] }

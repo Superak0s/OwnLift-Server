@@ -18,7 +18,7 @@ pnpm ownlift passwd <username> <newpw>   # reset a password — the only recover
 pnpm ownlift reports [limit]             # list user reports filed on this instance
 ```
 
-There is no test framework and no linter configured — don't invent `pnpm test`/`pnpm lint`. The one runnable check is `npx tsx middleware/validation.check.ts` (assert-based, prints "ok"); run it after touching `middleware/validation.ts`.
+`pnpm test` runs the vitest suite (`vitest run`; add `--coverage` when you want a report). It needs a live MySQL — `tests/global-setup.ts` drops and rebuilds an `ownlift_test` database from `.env` credentials, and route tests drive the real `app` through supertest. There is no linter — don't invent `pnpm lint`. `npx tsx middleware/validation.check.ts` (assert-based, prints "ok") is still the quick check to run after touching `middleware/validation.ts`.
 
 Requires a `.env`, loaded by Node itself via `--env-file-if-exists=.env` in the `dev`/`start`/`ownlift` scripts — there is no `dotenv` dependency, so any *new* entry point must pass that flag too. See README.md for the full variable table. At minimum `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `JWT_SECRET` (≥32 chars), and `ALLOWED_ORIGINS` must be set or the server throws on boot (`server.ts`). The DB and schema auto-provision on first connect against a fresh database.
 

@@ -1,17 +1,17 @@
 export interface Friend {
-  friendship_id: number
-  friends_since: Date
-  friend_user_id: number
+  friendshipId: number
+  friendsSince: Date
+  friendUserId: number
   username: string
   name: string
   email: string
 }
 
 export interface FriendRequest {
-  friendship_id: number
-  user_id?: number
-  friend_id?: number
-  created_at: Date
+  friendshipId: number
+  userId?: number
+  friendId?: number
+  createdAt: Date
   username: string
   name: string
   email: string
@@ -27,7 +27,7 @@ export interface UserSearchResult {
   id: number
   username: string
   name: string
-  friendship_status: FriendshipStatus
+  friendshipStatus: FriendshipStatus
 }
 
 export type PermissionType =
@@ -39,14 +39,14 @@ export type PermissionType =
 
 export interface Permission {
   id: number
-  from_user_id?: number
-  to_user_id?: number
-  permission_type: PermissionType
+  fromUserId?: number
+  toUserId?: number
+  permissionType: PermissionType
   payload: Record<string, unknown> | null
-  created_at: Date
-  updated_at: Date
-  from_username?: string
-  to_username?: string
+  createdAt: Date
+  updatedAt: Date
+  fromUsername?: string
+  toUsername?: string
 }
 
 export interface JointSessionParticipant {

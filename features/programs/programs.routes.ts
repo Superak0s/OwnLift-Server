@@ -73,7 +73,13 @@ router.delete("/", async (req: Request, res: Response) => {
 })
 
 router.patch("/exercise/rename", async (req: Request, res: Response) => {
-  const { dayNumber, exerciseIndex, newName, newMuscleGroup } = req.body
+  const {
+    dayNumber,
+    exerciseIndex,
+    newName,
+    newPrimaryMuscles,
+    newSecondaryMuscles,
+  } = req.body
   const split = req.body.split
 
   if (
@@ -93,7 +99,8 @@ router.patch("/exercise/rename", async (req: Request, res: Response) => {
     split,
     exerciseIndex,
     newName,
-    newMuscleGroup,
+    newPrimaryMuscles,
+    newSecondaryMuscles,
     // absent leaves the stored id alone; explicit null clears it
     "newExerciseId" in req.body ? req.body.newExerciseId : undefined,
   )

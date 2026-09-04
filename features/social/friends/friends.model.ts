@@ -13,7 +13,7 @@ import type {
   UserSearchResult,
 } from "../social.types.js"
 
-type BlockedUser = { id: number; username: string; name: string; blocked_at: Date }
+type BlockedUser = { id: number; username: string; name: string; blockedAt: Date }
 
 // Ceiling on the pending-request lists so a user spammed with requests still
 // gets a bounded response.
@@ -105,8 +105,8 @@ export async function removeFriend(
 
 export async function getFriends(userId: number): Promise<Friend[]> {
   const [rows] = await pool.execute<(Friend & RowDataPacket)[]>(
-    `SELECT f.id AS friendship_id, f.created_at AS friends_since,
-       CASE WHEN f.user_id = ? THEN f.friend_id ELSE f.user_id END AS friend_user_id,
+    `SELECT f.id AS friendshipId, f.created_at AS friendsSince,
+       CASE WHEN f.user_id = ? THEN f.friend_id ELSE f.user_id END AS friendUserId,
        CASE WHEN f.user_id = ? THEN u2.username ELSE u1.username END AS username,
        CASE WHEN f.user_id = ? THEN u2.name ELSE u1.name END AS name,
        CASE WHEN f.user_id = ? THEN u2.email ELSE u1.email END AS email
@@ -123,7 +123,7 @@ export async function getPendingRequests(
   userId: number,
 ): Promise<FriendRequest[]> {
   const [rows] = await pool.execute<(FriendRequest & RowDataPacket)[]>(
-    `SELECT f.id AS friendship_id, f.user_id, f.created_at, u.username, u.name, u.email
+    `SELECT f.id AS friendshipId, f.user_id AS userId, f.created_at AS createdAt, u.username, u.name, u.email
      FROM friendships f JOIN users u ON f.user_id = u.id
      WHERE f.friend_id = ? AND f.status = 'pending' ORDER BY f.created_at DESC LIMIT ?`,
     [userId, PENDING_REQUESTS_LIMIT],
@@ -135,7 +135,7 @@ export async function getSentRequests(
   userId: number,
 ): Promise<FriendRequest[]> {
   const [rows] = await pool.execute<(FriendRequest & RowDataPacket)[]>(
-    `SELECT f.id AS friendship_id, f.friend_id, f.created_at, u.username, u.name, u.email
+    `SELECT f.id AS friendshipId, f.friend_id AS friendId, f.created_at AS createdAt, u.username, u.name, u.email
      FROM friendships f JOIN users u ON f.friend_id = u.id
      WHERE f.user_id = ? AND f.status = 'pending' ORDER BY f.created_at DESC LIMIT ?`,
     [userId, PENDING_REQUESTS_LIMIT],
@@ -248,7 +248,7 @@ export async function searchUsers(
          WHEN f.id IS NOT NULL AND f.status = 'pending' AND f.user_id = ? THEN 'request_sent'
          WHEN f.id IS NOT NULL AND f.status = 'pending' AND f.friend_id = ? THEN 'request_received'
          ELSE 'none'
-       END AS friendship_status
+       END AS friendshipStatus
      FROM users u
      LEFT JOIN friendships f ON ((f.user_id = ? AND f.friend_id = u.id) OR (f.user_id = u.id AND f.friend_id = ?))
      WHERE (u.username LIKE ? OR u.name LIKE ?) AND u.id != ?
@@ -335,7 +335,7 @@ export async function unblockUser(
 
 export async function getBlockedUsers(userId: number): Promise<BlockedUser[]> {
   const [rows] = await pool.execute<(BlockedUser & RowDataPacket)[]>(
-    `SELECT u.id, u.username, u.name, b.created_at AS blocked_at
+    `SELECT u.id, u.username, u.name, b.created_at AS blockedAt
      FROM user_blocks b JOIN users u ON b.blocked_id = u.id
      WHERE b.blocker_id = ? ORDER BY b.created_at DESC LIMIT 500`,
     [userId],

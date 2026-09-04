@@ -29,6 +29,9 @@ export const pool: Pool = mysql.createPool({
   // pile up memory/timeouts.
   queueLimit: 200,
   dateStrings: true,
+  // DECIMAL columns otherwise arrive as strings, so weights and volumes would
+  // serialize into JSON quoted and force every client to re-parse them.
+  decimalNumbers: true,
 });
 
 /**
@@ -74,6 +77,15 @@ function parseSQLStatements(sql: string): string[] {
 // run on every boot. Further schema changes (new columns, indexes, etc.) go
 // through migrations/*.sql rather than edits to schema.sql.
 
+/** True when the database has no tables yet — i.e. schema.sql is about to
+ * create everything from scratch, so no migration has anything to do. */
+async function isEmptyDatabase(): Promise<boolean> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = DATABASE()`,
+  );
+  return Number(rows[0]!.n) === 0;
+}
+
 async function initializeTables(): Promise<void> {
   const schemaPath = path.join(__dirname, "schema.sql");
   if (!fs.existsSync(schemaPath)) {
@@ -97,7 +109,7 @@ async function initializeTables(): Promise<void> {
 // columns, indexes on existing tables). Each file in migrations/ runs at
 // most once, tracked in _migrations, in filename order.
 
-async function runMigrations(): Promise<void> {
+async function runMigrations(isFresh: boolean): Promise<void> {
   const migrationsDir = path.join(__dirname, "..", "migrations");
   if (!fs.existsSync(migrationsDir)) return;
 
@@ -114,6 +126,17 @@ async function runMigrations(): Promise<void> {
     .filter((f) => f.endsWith(".sql"))
     .sort((a, b) => a.localeCompare(b));
 
+  // schema.sql always describes the *current* shape, so a database created in
+  // this run is already past every migration. Running them anyway fails on
+  // columns that no longer exist (renames, drops) or already do (adds), so
+  // stamp them as applied instead.
+  if (isFresh) {
+    for (const file of files)
+      await pool.execute(`INSERT INTO _migrations (name) VALUES (?)`, [file]);
+    logger.info(`✓ Fresh database — marked ${files.length} migrations applied`);
+    return;
+  }
+
   for (const file of files) {
     const [applied] = await pool.execute<RowDataPacket[]>(
       `SELECT 1 FROM _migrations WHERE name = ?`,
@@ -128,14 +151,7 @@ async function runMigrations(): Promise<void> {
     try {
       await connection.beginTransaction();
       for (const stmt of statements) {
-        try {
-          await connection.execute(stmt);
-        } catch (err) {
-          // 1091 = column/key already gone. A fresh DB builds from schema.sql,
-          // which no longer has the columns older migrations drop, so treat
-          // those DROPs as already applied instead of failing the boot.
-          if ((err as { errno?: number }).errno !== 1091) throw err;
-        }
+        await connection.execute(stmt);
       }
       await connection.execute(`INSERT INTO _migrations (name) VALUES (?)`, [
         file,
@@ -157,8 +173,9 @@ export async function testDatabaseConnection(): Promise<void> {
     const connection = await pool.getConnection();
     logger.info("✓ Database connected successfully");
     connection.release();
+    const isFresh = await isEmptyDatabase();
     await initializeTables();
-    await runMigrations();
+    await runMigrations(isFresh);
     logger.info("✓ Database is ready");
   } catch (error) {
     // Log only the message — never the error object itself as it may contain

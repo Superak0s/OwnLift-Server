@@ -16,27 +16,28 @@ import type {
 
 interface PermissionRow extends RowDataPacket {
   id: number
-  from_user_id?: number
-  to_user_id?: number
-  permission_type: PermissionType
+  fromUserId?: number
+  toUserId?: number
+  permissionType: PermissionType
   payload: string | null
-  created_at: Date
-  updated_at: Date
-  from_username?: string
-  to_username?: string
+  createdAt: Date
+  updatedAt: Date
+  fromUsername?: string
+  toUsername?: string
 }
 
 interface FriendSessionRow extends RowDataPacket {
   id: number
-  day_number: number
-  day_title: string
-  start_time: Date | string | null
-  end_time: Date | string | null
-  total_duration: number | null
-  completed_sets: number
+  dayNumber: number
+  dayTitle: string
+  startTime: Date | string | null
+  endTime: Date | string | null
+  totalDuration: number | null
+  completedSets: number
   // JSON column — mysql2 auto-parses this to string[] for most rows, but
   // some legacy rows hold a plain comma-joined string. See parseMuscleGroups.
-  muscle_groups: string | string[]
+  primaryMuscles: string | string[]
+  secondaryMuscles: string | string[]
 }
 
 interface InviteRow extends RowDataPacket {
@@ -118,7 +119,7 @@ export async function getGrantedPermissions(
   userId: number,
 ): Promise<Permission[]> {
   const [rows] = await pool.execute<PermissionRow[]>(
-    `SELECT sp.id, sp.to_user_id, sp.permission_type, sp.payload, sp.created_at, sp.updated_at, u.username AS to_username
+    `SELECT sp.id, sp.to_user_id AS toUserId, sp.permission_type AS permissionType, sp.payload, sp.created_at AS createdAt, sp.updated_at AS updatedAt, u.username AS toUsername
      FROM sharing_permissions sp JOIN users u ON u.id = sp.to_user_id
      WHERE sp.from_user_id = ? ORDER BY sp.permission_type, sp.created_at DESC LIMIT 500`,
     [userId],
@@ -135,7 +136,7 @@ export async function getReceivedPermissions(
   userId: number,
 ): Promise<Permission[]> {
   const [rows] = await pool.execute<PermissionRow[]>(
-    `SELECT sp.id, sp.from_user_id, sp.permission_type, sp.payload, sp.created_at, sp.updated_at, u.username AS from_username
+    `SELECT sp.id, sp.from_user_id AS fromUserId, sp.permission_type AS permissionType, sp.payload, sp.created_at AS createdAt, sp.updated_at AS updatedAt, u.username AS fromUsername
      FROM sharing_permissions sp JOIN users u ON u.id = sp.from_user_id
      WHERE sp.to_user_id = ? ORDER BY sp.permission_type, sp.created_at DESC LIMIT 500`,
     [userId],
@@ -162,13 +163,17 @@ export async function hasPermission(
 
 export async function getFriendSessions(friendId: number, limit = 60) {
   const [rows] = await pool.execute<FriendSessionRow[]>(
-    `SELECT s.id, s.day_number, s.day_title, s.start_time, s.end_time, s.total_duration, s.completed_sets, s.muscle_groups
-     FROM sessions s WHERE s.user_id = ? AND s.is_admin = 0 ORDER BY s.start_time DESC LIMIT ?`,
+    `SELECT s.id, s.day_number AS dayNumber, s.day_title AS dayTitle,
+            s.start_time AS startTime, s.end_time AS endTime,
+            s.total_duration AS totalDuration, s.completed_sets AS completedSets,
+            s.primary_muscles AS primaryMuscles, s.secondary_muscles AS secondaryMuscles
+     FROM sessions s WHERE s.user_id = ? ORDER BY s.start_time DESC LIMIT ?`,
     [friendId, limit],
   )
   return rows.map((s) => ({
     ...s,
-    muscle_groups: parseMuscleGroups(s.muscle_groups),
+    primaryMuscles: parseMuscleGroups(s.primaryMuscles),
+    secondaryMuscles: parseMuscleGroups(s.secondaryMuscles),
   }))
 }
 
@@ -177,23 +182,31 @@ export async function getFriendSessionDetails(
   sessionId: number,
 ) {
   const [rows] = await pool.execute<FriendSessionRow[]>(
-    `SELECT s.id, s.day_number, s.day_title, s.start_time, s.end_time, s.total_duration, s.completed_sets, s.muscle_groups
-     FROM sessions s WHERE s.id = ? AND s.user_id = ? AND s.is_admin = 0`,
+    `SELECT s.id, s.day_number AS dayNumber, s.day_title AS dayTitle,
+            s.start_time AS startTime, s.end_time AS endTime,
+            s.total_duration AS totalDuration, s.completed_sets AS completedSets,
+            s.primary_muscles AS primaryMuscles, s.secondary_muscles AS secondaryMuscles
+     FROM sessions s WHERE s.id = ? AND s.user_id = ?`,
     [sessionId, friendId],
   )
   if (!rows[0]) return null
   const session = {
     ...rows[0],
-    muscle_groups: parseMuscleGroups(rows[0].muscle_groups),
+    primaryMuscles: parseMuscleGroups(rows[0].primaryMuscles),
+    secondaryMuscles: parseMuscleGroups(rows[0].secondaryMuscles),
   }
   const [timings] = await pool.execute<RowDataPacket[]>(
-    `SELECT st.id, st.set_index, st.weight, st.reps, st.set_duration, st.rest_time,
-            e.name AS exercise_name, e.muscle_group AS exercise_muscle_group
+    `SELECT st.id, st.set_index AS setIndex, st.weight, st.reps,
+            st.set_duration AS setDuration, st.rest_time AS restTime,
+            st.machine_name AS machineName,
+            e.name AS exerciseName,
+            e.primary_muscles AS exercisePrimaryMuscles,
+            e.secondary_muscles AS exerciseSecondaryMuscles
      FROM set_timings st JOIN exercises e ON st.exercise_id = e.id
      WHERE st.session_id = ? ORDER BY e.name ASC, st.set_index ASC`,
     [sessionId],
   )
-  return { ...session, set_timings: timings }
+  return { ...session, setTimings: timings }
 }
 
 export async function createJointInvite(
@@ -372,7 +385,7 @@ export async function getUserActiveSessionStatus(
   userId: number,
 ): Promise<{ hasActiveSession: boolean; sessionId: number | null }> {
   const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT id FROM sessions WHERE user_id = ? AND end_time IS NULL AND is_admin = 0 ORDER BY start_time DESC LIMIT 1`,
+    `SELECT id FROM sessions WHERE user_id = ? AND end_time IS NULL ORDER BY start_time DESC LIMIT 1`,
     [userId],
   )
   return rows[0]

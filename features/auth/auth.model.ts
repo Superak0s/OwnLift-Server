@@ -23,8 +23,8 @@ function toAuthUser(u: AuthUserRow): AuthUser & { password_hash?: string } {
     email: u.email,
     password_hash: u.password_hash,
     name: u.name,
-    is_admin: !!u.is_admin,
-    created_at: u.created_at,
+    isAdmin: !!u.is_admin,
+    createdAt: u.created_at,
   }
 }
 

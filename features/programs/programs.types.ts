@@ -1,6 +1,7 @@
 export interface Exercise {
   name: string
-  muscleGroup: string
+  primaryMuscles?: string[]
+  secondaryMuscles?: string[]
   sets: number
   /** Canonical id from the bundled exercise DB; null = custom exercise. */
   exerciseId?: string | null
@@ -9,7 +10,8 @@ export interface Exercise {
 /** Exercise row that also tracks per-split set counts (used in day views). */
 interface ExerciseWithSets {
   name: string
-  muscleGroup: string
+  primaryMuscles: string[]
+  secondaryMuscles: string[]
   exerciseId?: string | null
   setsBySplit: Record<string, number>
 }
@@ -27,7 +29,8 @@ export interface SplitWorkout {
 export interface ProgramDay {
   dayNumber: number
   dayTitle: string
-  muscleGroups: string[]
+  primaryMuscles?: string[]
+  secondaryMuscles?: string[]
   /** Flat exercise list with per-split set counts — used by parser output. */
   exercises: ExerciseWithSets[]
   /** Per-split exercise lists — used at runtime. */

@@ -110,7 +110,8 @@ export async function renameExercise(
   split: string,
   exerciseIndex: number,
   newName: string,
-  newMuscleGroup?: string,
+  newPrimaryMuscles?: string[],
+  newSecondaryMuscles?: string[],
   newExerciseId?: string | null,
 ): Promise<{ oldName: string; newName: string; exerciseIndex: number }> {
   const { programData, originalFilename } = await loadProgram(userId)
@@ -121,8 +122,10 @@ export async function renameExercise(
   )
   const oldName = pw.exercises[exerciseIndex].name
   pw.exercises[exerciseIndex].name = newName.trim()
-  if (newMuscleGroup !== undefined)
-    pw.exercises[exerciseIndex].muscleGroup = newMuscleGroup
+  if (newPrimaryMuscles !== undefined)
+    pw.exercises[exerciseIndex].primaryMuscles = newPrimaryMuscles
+  if (newSecondaryMuscles !== undefined)
+    pw.exercises[exerciseIndex].secondaryMuscles = newSecondaryMuscles
   // Explicit null is how a matched exercise is turned back into a custom one.
   if (newExerciseId !== undefined)
     pw.exercises[exerciseIndex].exerciseId = newExerciseId?.trim() || null
@@ -136,8 +139,9 @@ export async function addExercise(
   split: string,
   exercise: {
     name?: string
-    muscleGroup?: string
     sets?: number
+    primaryMuscles?: string[]
+    secondaryMuscles?: string[]
     exerciseId?: string | null
   },
 ): Promise<{ exerciseIndex: number; exercise: Exercise }> {
@@ -152,7 +156,8 @@ export async function addExercise(
 
   const newExercise: Exercise = {
     name: exercise.name.trim(),
-    muscleGroup: exercise.muscleGroup?.trim() || "",
+    primaryMuscles: exercise.primaryMuscles ?? [],
+    secondaryMuscles: exercise.secondaryMuscles ?? [],
     sets,
     exerciseId: exercise.exerciseId?.trim() || null,
   }

@@ -47,8 +47,8 @@ router.post("/signup", validateRegistration, async (req: Request, res: Response)
       username: user.username,
       email: user.email,
       name: user.name,
-      is_admin: user.is_admin,
-      created_at: user.created_at,
+      isAdmin: user.isAdmin,
+      createdAt: user.createdAt,
     },
   })
 })
@@ -73,8 +73,8 @@ router.post("/signin", validateLogin, async (req: Request, res: Response) => {
       username: user.username,
       email: user.email,
       name: user.name,
-      is_admin: user.is_admin,
-      created_at: user.created_at,
+      isAdmin: user.isAdmin,
+      createdAt: user.createdAt,
     },
   })
 })

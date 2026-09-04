@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
   height_unit     ENUM('cm','ft')            DEFAULT 'cm',
   weight_unit     ENUM('kg','lbs')           DEFAULT 'kg',
   is_admin        TINYINT(1)      NOT NULL   DEFAULT 0,
+  token_version   INT UNSIGNED    NOT NULL   DEFAULT 0,      -- bump to revoke every outstanding JWT
   created_at      DATETIME        NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_users_username (username),
@@ -29,7 +30,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS exercises (
   id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
   name            VARCHAR(255)    NOT NULL,
-  muscle_group    VARCHAR(128)               DEFAULT NULL,
+  primary_muscles JSON                       DEFAULT NULL,   -- stored as JSON array
+  secondary_muscles JSON                    DEFAULT NULL,   -- stored as JSON array
   PRIMARY KEY (id),
   UNIQUE KEY uq_exercises_name (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -42,16 +44,16 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id         INT UNSIGNED    NOT NULL,
   day_number      INT             NOT NULL,
   day_title       VARCHAR(255)               DEFAULT NULL,
-  muscle_groups   JSON                       DEFAULT NULL,   -- stored as JSON array
+  primary_muscles JSON                       DEFAULT NULL,   -- stored as JSON array
+  secondary_muscles JSON                    DEFAULT NULL,   -- stored as JSON array
   `split`         VARCHAR(128)               DEFAULT NULL,
   start_time      DATETIME        NOT NULL,
   end_time        DATETIME                   DEFAULT NULL,
   total_duration  INT                        DEFAULT NULL,   -- seconds
   completed_sets  INT             NOT NULL   DEFAULT 0,
-  is_admin        TINYINT(1)      NOT NULL   DEFAULT 0,
+  is_demo         TINYINT(1)      NOT NULL   DEFAULT 0,
   PRIMARY KEY (id),
   KEY idx_sessions_user_id    (user_id),
-  KEY idx_sessions_user_admin (user_id, is_admin),
   KEY idx_sessions_start_time (start_time),
   CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -73,11 +75,13 @@ CREATE TABLE IF NOT EXISTS set_timings (
   reps            INT                        DEFAULT NULL,
   note            TEXT                       DEFAULT NULL,
   is_warmup       TINYINT(1)      NOT NULL   DEFAULT 0,
+  machine_name    VARCHAR(100)               DEFAULT NULL,   -- machine/setup the set was performed on
   created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_st_session_id    (session_id),
   KEY idx_st_exercise_id   (exercise_id),
   KEY idx_st_exercise_index (session_id, exercise_id),
+  KEY idx_st_created_at    (created_at),
   CONSTRAINT fk_st_session  FOREIGN KEY (session_id)  REFERENCES sessions  (id) ON DELETE CASCADE,
   CONSTRAINT fk_st_exercise FOREIGN KEY (exercise_id) REFERENCES exercises (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -523,22 +527,6 @@ CREATE TABLE IF NOT EXISTS menstrual_settings (
   updated_at        DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (user_id),
   CONSTRAINT fk_mset_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- -----------------------------------------------------------------------------
--- menstrual_day_flow -- one flow reading per user per calendar day
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS menstrual_day_flow (
-  id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  user_id     INT UNSIGNED NOT NULL,
-  date        DATE         NOT NULL,
-  intensity   ENUM('light','moderate','heavy') NOT NULL DEFAULT 'moderate',
-  note        TEXT                  DEFAULT NULL,
-  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_mdf_user_date (user_id, date),
-  CONSTRAINT fk_mdf_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- -----------------------------------------------------------------------------

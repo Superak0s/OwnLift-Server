@@ -8,14 +8,14 @@ interface UserProfile {
   height_cm: number | null
   height_unit: "cm" | "ft" | null
   weight_unit: "kg" | "lbs" | null
-  is_admin: boolean
-  created_at: Date
+  isAdmin: boolean
+  createdAt: Date
 }
 
 /** Subset attached to `req.user` after JWT authentication. */
 export type AuthUser = Pick<
   UserProfile,
-  "id" | "username" | "email" | "name" | "created_at" | "is_admin"
+  "id" | "username" | "email" | "name" | "createdAt" | "isAdmin"
 >
 
 export interface UserBodyData {
