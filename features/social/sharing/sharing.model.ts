@@ -69,6 +69,7 @@ const VALID_PERMISSION_TYPES: PermissionType[] = [
   "program",
   "joint_session",
   "watch_session",
+  "trainer",
 ]
 
 const INVITE_TTL_SECONDS = 120
@@ -147,6 +148,28 @@ export async function getReceivedPermissions(
       ? (JSON.parse(r.payload) as Record<string, unknown>)
       : null,
   }))
+}
+
+/**
+ * Every user who has granted an active `trainer` permission to someone else —
+ * i.e. the users a trainee's data is currently visible/writable through.
+ * Used to fan out `trainee_set_recorded` WS events.
+ */
+interface TrainerGrantRow extends RowDataPacket {
+  trainerId: number
+  trainerUsername: string
+}
+
+export async function getActiveTrainers(
+  traineeId: number,
+): Promise<TrainerGrantRow[]> {
+  const [rows] = await pool.execute<TrainerGrantRow[]>(
+    `SELECT sp.to_user_id AS trainerId, u.username AS trainerUsername
+     FROM sharing_permissions sp JOIN users u ON u.id = sp.to_user_id
+     WHERE sp.from_user_id = ? AND sp.permission_type = 'trainer'`,
+    [traineeId],
+  )
+  return rows
 }
 
 export async function hasPermission(

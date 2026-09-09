@@ -42,12 +42,12 @@ describe("hydration routes", () => {
     expect(read.body.data.goalMl).toBe(2500)
   })
 
-  it("deletes entries, 400 on a missing one", async () => {
+  it("deletes entries, 404 on a missing one", async () => {
     const del = await request(app).delete(`/api/tracking/hydration/${entryId}`).set(auth(u.token))
     expect(del.status).toBe(200)
 
     const again = await request(app).delete(`/api/tracking/hydration/${entryId}`).set(auth(u.token))
-    expect(again.status).toBe(400)
+    expect(again.status).toBe(404)
 
     const badId = await request(app).delete("/api/tracking/hydration/abc").set(auth(u.token))
     expect(badId.status).toBe(400)

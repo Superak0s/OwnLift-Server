@@ -1,4 +1,4 @@
-import { pool, formatDateForMySQL } from "@/config/database.js"
+import { pool, formatDateForMySQL, parseMySQLDate } from "@/config/database.js"
 import type { PoolConnection } from "mysql2/promise"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
 import { NotFoundError, ForbiddenError } from "@/middleware/errorHandler.js"
@@ -20,6 +20,7 @@ interface SetTiming {
   reps: number
   note: string | null
   isWarmup: number
+  rpe: number | null
   machineName: string | null
 }
 
@@ -45,6 +46,7 @@ interface RecordSetResult {
   exerciseId: number
   setDuration: number
   restTime: number | null
+  rpe: number | null
   machineName: string | null
 }
 
@@ -61,7 +63,7 @@ const TIMING_COLS = `st.id, st.session_id AS sessionId, st.exercise_id AS exerci
   st.exercise_index AS exerciseIndex, st.set_index AS setIndex,
   st.start_time AS startTime, st.end_time AS endTime,
   st.set_duration AS setDuration, st.rest_time AS restTime,
-  st.weight, st.reps, st.note, st.is_warmup AS isWarmup,
+  st.weight, st.reps, st.note, st.is_warmup AS isWarmup, st.rpe,
   st.machine_name AS machineName, e.name AS exerciseName,
   e.primary_muscles AS exercisePrimaryMuscles,
   e.secondary_muscles AS exerciseSecondaryMuscles`
@@ -102,6 +104,7 @@ interface SetTimingRow extends RowDataPacket {
   reps: number
   note: string | null
   isWarmup: number
+  rpe: number | null
   machineName: string | null
 }
 
@@ -196,6 +199,7 @@ export async function recordSetTiming(
   primaryMuscles: string[] = [],
   secondaryMuscles: string[] = [],
   machineName: string | null = null,
+  rpe: number | null = null,
 ): Promise<RecordSetResult> {
   const exerciseId = await findOrCreateExercise(
     exerciseName,
@@ -213,7 +217,8 @@ export async function recordSetTiming(
   const restTime: number | null =
     lastSets.length > 0
       ? Math.round(
-          (start.getTime() - new Date(lastSets[0].end_time).getTime()) / 1000,
+          (start.getTime() - parseMySQLDate(lastSets[0].end_time).getTime()) /
+            1000,
         )
       : null
 
@@ -222,8 +227,8 @@ export async function recordSetTiming(
     await connection.beginTransaction()
 
     const [result] = await connection.execute<ResultSetHeader>(
-      `INSERT INTO set_timings (session_id, exercise_id, set_index, start_time, end_time, set_duration, rest_time, weight, reps, note, is_warmup, machine_name)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO set_timings (session_id, exercise_id, set_index, start_time, end_time, set_duration, rest_time, weight, reps, note, is_warmup, rpe, machine_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sessionId,
         exerciseId,
@@ -236,6 +241,7 @@ export async function recordSetTiming(
         reps,
         note,
         isWarmup ? 1 : 0,
+        rpe,
         machineName,
       ],
     )
@@ -251,6 +257,7 @@ export async function recordSetTiming(
       exerciseId,
       setDuration,
       restTime,
+      rpe,
       machineName,
     }
   } catch (err) {
@@ -271,6 +278,7 @@ interface UpdateSetTimingParams {
   endTime?: string
   note?: string | null
   isWarmup?: boolean
+  rpe?: number | null
   machineName?: string | null
 }
 
@@ -321,6 +329,10 @@ export async function updateSetTiming(
     assignments.push("is_warmup = ?")
     params.push(updates.isWarmup ? 1 : 0)
   }
+  if (updates.rpe !== undefined) {
+    assignments.push("rpe = ?")
+    params.push(updates.rpe)
+  }
   if (updates.machineName !== undefined) {
     assignments.push("machine_name = ?")
     params.push(updates.machineName)
@@ -334,8 +346,10 @@ export async function updateSetTiming(
     params.push(formatDateForMySQL(updates.endTime))
   }
   if (updates.startTime !== undefined || updates.endTime !== undefined) {
-    const start = new Date(updates.startTime ?? (owned[0].startTime as string))
-    const end = new Date(updates.endTime ?? (owned[0].endTime as string))
+    const start = parseMySQLDate(
+      updates.startTime ?? (owned[0].startTime as string),
+    )
+    const end = parseMySQLDate(updates.endTime ?? (owned[0].endTime as string))
     assignments.push("set_duration = ?")
     params.push(Math.round((end.getTime() - start.getTime()) / 1000))
   }

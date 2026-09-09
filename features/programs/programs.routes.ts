@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
+import { applyTrainerContext, denyTrainer } from "@/middleware/trainerContext.js"
 import {
   NotFoundError,
   ValidationError,
@@ -15,7 +16,7 @@ import {
 
 const router: Router = Router()
 
-router.use(authenticateToken)
+router.use(authenticateToken, applyTrainerContext)
 
 router.get("/", async (req: Request, res: Response) => {
   const result = await getProgramByUserId(req.user!.id)
@@ -67,7 +68,7 @@ router.post("/upload", async (req: Request, res: Response) => {
   })
 })
 
-router.delete("/", async (req: Request, res: Response) => {
+router.delete("/", denyTrainer, async (req: Request, res: Response) => {
   await deleteProgramByUserId(req.user!.id)
   res.json({ success: true, message: "Program deleted" })
 })

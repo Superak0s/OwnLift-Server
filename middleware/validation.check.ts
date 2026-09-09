@@ -72,6 +72,8 @@ mw(good)() // full create payload passes
 mw({ weight: 60 })() // a lone field passes — that's the update path
 mw({ machineName: "Machine A" })() // free text, only the length cap applies
 mw({ machineName: null })() // null is "no machine", same as absent
+mw({ rpe: 1 })(); mw({ rpe: 10 })() // rpe is an integer on a 1-10 scale
+mw({ rpe: null })() // null clears a rating — never coerced to 0
 mw({})() // empty patch passes
 
 // ...but a supplied field that is malformed is still rejected on both paths.
@@ -86,6 +88,10 @@ for (const [bad, re] of [
   [{ isWarmup: "yes" }, /isWarmup/],
   [{ machineName: 7 }, /machineName must be a string/],
   [{ machineName: "x".repeat(101) }, /machineName/],
+  [{ rpe: 0 }, /rpe must be an integer between 1 and 10/],
+  [{ rpe: 11 }, /rpe/],
+  [{ rpe: 7.5 }, /rpe/],
+  [{ rpe: "8" }, /rpe/],
 ] as [Record<string, unknown>, RegExp][]) {
   assert.throws(mw(bad), /Invalid set timing data/, `expected ${JSON.stringify(bad)} to be rejected`)
   const err = (() => { try { mw(bad)() } catch (e) { return e } })() as { details: string[] }

@@ -195,8 +195,15 @@ export function validateProfileUpdate(
   _res: Response,
   next: NextFunction,
 ): void {
-  const { name, email } = req.body
+  const { name, email, heightCm } = req.body
   const errors: string[] = []
+
+  // Range is enforced again in updateUserProfile, which is the only writer.
+  if (heightCm !== undefined) {
+    const h = Number(heightCm)
+    if (!Number.isFinite(h) || h <= 0 || h > 300)
+      errors.push("Height must be between 1-300 cm")
+  }
 
   if (name !== undefined) {
     if (typeof name !== "string" || !name.trim()) {
@@ -294,6 +301,7 @@ export function validateSetTiming(
     note,
     isWarmup,
     machineName,
+    rpe,
   } = req.body
   const errors: string[] = []
 
@@ -326,6 +334,9 @@ export function validateSetTiming(
   }
   if (isWarmup !== undefined && typeof isWarmup !== "boolean")
     errors.push("isWarmup must be a boolean")
+  // null clears a previous rating; absent leaves it alone. Never coerced to 0.
+  if (rpe != null && (!validateInteger(rpe) || rpe < 1 || rpe > 10))
+    errors.push("rpe must be an integer between 1 and 10")
   // Free text from the user — only the column width matters.
   if (machineName != null) {
     if (typeof machineName !== "string")

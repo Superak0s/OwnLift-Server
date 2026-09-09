@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
 import { queryLimit, parseIntParam } from "@/middleware/validation.js"
 import {
+  NotFoundError,
   ValidationError,
 } from "@/middleware/errorHandler.js"
 import {
@@ -45,7 +46,7 @@ router.get("/", async (req: Request, res: Response) => {
 router.delete("/:id", async (req: Request, res: Response) => {
   const id = parseIntParam(String(req.params.id), "measurement ID")
   const deleted = await deleteMeasurementEntry(req.user!.id, id)
-  if (!deleted) throw new ValidationError("Measurement not found")
+  if (!deleted) throw new NotFoundError("Measurement")
   res.json({ success: true })
 })
 

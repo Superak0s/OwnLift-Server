@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
-import { ValidationError } from "@/middleware/errorHandler.js"
+import { NotFoundError, ValidationError } from "@/middleware/errorHandler.js"
 import {
   logMenstrualCycle,
   getMenstrualHistory,
@@ -44,7 +44,7 @@ router.get("/stats", async (req: Request, res: Response) => {
 router.delete("/:id", async (req: Request, res: Response) => {
   const id = parseIntParam(String(req.params.id), "menstrual entry ID")
   const result = await deleteMenstrualEntry(req.user!.id, id)
-  if (!result.deleted) throw new ValidationError("Menstrual entry not found")
+  if (!result.deleted) throw new NotFoundError("Menstrual entry")
   // If this entry was a cycle start, client should remove predicted periods
   res.json({ success: true, removedPredictions: result.wasCycleStart })
 })

@@ -142,6 +142,7 @@ export async function addExercise(
     sets?: number
     primaryMuscles?: string[]
     secondaryMuscles?: string[]
+    reps?: string
     exerciseId?: string | null
   },
 ): Promise<{ exerciseIndex: number; exercise: Exercise }> {
@@ -159,6 +160,9 @@ export async function addExercise(
     primaryMuscles: exercise.primaryMuscles ?? [],
     secondaryMuscles: exercise.secondaryMuscles ?? [],
     sets,
+    // Free text ("10", "8-12", even "0") — trimmed, stored as given, or
+    // omitted when absent/blank. Never a validation failure.
+    reps: exercise.reps?.trim() || undefined,
     exerciseId: exercise.exerciseId?.trim() || null,
   }
   day.split[split].exercises.push(newExercise)

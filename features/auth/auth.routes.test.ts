@@ -164,6 +164,62 @@ describe("auth routes", () => {
     expect(stillIn.status).toBe(200)
   })
 
+  it("exports and wipes the settings and custom-measurement tables too", async () => {
+    const v = await signup("wipeall")
+
+    expect(
+      (await request(app).post("/api/tracking/hydration/settings").set(auth(v.token)).send({ goalMl: 3000 })).status,
+    ).toBe(200)
+    expect(
+      (await request(app).post("/api/tracking/menstrual/settings").set(auth(v.token)).send({ periodDays: 6, cycleLengthDays: 30 })).status,
+    ).toBe(200)
+    const type = await request(app)
+      .post("/api/tracking/custom-measurements/types")
+      .set(auth(v.token))
+      .send({ keyName: "forearm", label: "Forearm", unit: "cm" })
+    expect(type.status).toBe(201)
+    expect(
+      (await request(app).post("/api/tracking/custom-measurements/values").set(auth(v.token)).send({ typeId: type.body.data.id, value: 31.5 })).status,
+    ).toBe(201)
+
+    const exported = await request(app).get("/api/auth/account/export").set(auth(v.token))
+    for (const table of [
+      "menstrual_settings",
+      "hydration_settings",
+      "measurement_custom_types",
+      "measurement_custom_values",
+    ]) {
+      expect(exported.body.data[table]).toHaveLength(1)
+    }
+
+    expect(
+      (await request(app).delete("/api/auth/account/data").set(auth(v.token)).send({ confirmDelete: "DELETE_ALL_DATA" })).status,
+    ).toBe(200)
+
+    const after = await request(app).get("/api/auth/account/export").set(auth(v.token))
+    for (const table of [
+      "menstrual_settings",
+      "hydration_settings",
+      "measurement_custom_types",
+      "measurement_custom_values",
+    ]) {
+      expect(after.body.data[table]).toHaveLength(0)
+    }
+  })
+
+  it("PUT /profile stores height, which the export reads back", async () => {
+    const h = await signup("heighty")
+
+    const bad = await request(app).put("/api/auth/profile").set(auth(h.token)).send({ heightCm: 400 })
+    expect(bad.status).toBe(400)
+
+    const ok = await request(app).put("/api/auth/profile").set(auth(h.token)).send({ heightCm: 182 })
+    expect(ok.status).toBe(200)
+
+    const exported = await request(app).get("/api/auth/account/export").set(auth(h.token))
+    expect(Number(exported.body.data.profile.height_cm)).toBe(182)
+  })
+
   it("DELETE /account re-checks the password, then deletes", async () => {
     const res = await signup("delme")
 

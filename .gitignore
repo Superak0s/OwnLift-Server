@@ -71,3 +71,4 @@ Thumbs.db
 *.apk
 CLAUDE.md
 .claude/
+coverage/

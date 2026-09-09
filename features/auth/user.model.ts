@@ -89,6 +89,12 @@ const USER_OWNED_TABLES = [
   "injuries",
   "personal_muscle_notes",
   "menstrual_cycle",
+  "menstrual_settings",
+  "hydration_settings",
+  // values before types: the FK cascade would take them anyway, but the
+  // export reads this same list and needs both.
+  "measurement_custom_values",
+  "measurement_custom_types",
   "supplements", // cascades supplement_log
   "progress_photos",
   "progress_photos_muscle",

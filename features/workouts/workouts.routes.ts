@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
+import { applyTrainerContext, denyTrainer } from "@/middleware/trainerContext.js"
 import { ForbiddenError, ValidationError } from "@/middleware/errorHandler.js"
 import {
   parseIntParam,
@@ -22,11 +23,14 @@ import {
   deleteDemoSessions,
   updateSessionSplit,
 } from "./workouts.model.js"
-import { getFriendSessionDetails } from "../social/sharing/sharing.model.js"
+import {
+  getFriendSessionDetails,
+  getActiveTrainers,
+} from "../social/sharing/sharing.model.js"
 
 const router: Router = Router()
 
-router.use(authenticateToken)
+router.use(authenticateToken, applyTrainerContext)
 
 async function requireOwnSession(
   sessionId: number,
@@ -83,6 +87,9 @@ router.post("/start", validateSessionCreation, async (req: Request, res: Respons
     "friend_session_started",
   )
 
+  if (req.trainer)
+    pushTrainerEvent(req, newSessionId, "trainer_session_started")
+
   res.json({ success: true, session: { ...session, id: newSessionId } })
 })
 
@@ -130,6 +137,7 @@ router.post("/:sessionId/set", validateRequired(["exerciseName", "setIndex", "st
     primaryMuscles,
     secondaryMuscles,
     machineName,
+    rpe,
   } = req.body
 
   await requireOwnSession(sessionId, userId)
@@ -147,11 +155,29 @@ router.post("/:sessionId/set", validateRequired(["exerciseName", "setIndex", "st
     primaryMuscles ?? [],
     secondaryMuscles ?? [],
     machineName || null,
+    // Unrated stays NULL — 0 is not a valid RPE and would read as a real rating.
+    rpe ?? null,
   )
 
   pushLiveUpdateToWatchers(userId, sessionId).catch((err: Error) =>
     logger.warn("[WS] live update push failed:", err.message),
   )
+
+  if (req.trainer) {
+    // A trainer recorded the set — the trainee needs to know their data changed.
+    sendToUser(userId, "trainer_set_recorded", trainerEventPayload(req, sessionId))
+  } else {
+    // The trainee recorded their own set — tell every trainer with an active grant.
+    const trainers = await getActiveTrainers(userId)
+    trainers.forEach((t) =>
+      sendToUser(t.trainerId, "trainee_set_recorded", {
+        traineeId: userId,
+        trainerId: t.trainerId,
+        trainerUsername: t.trainerUsername,
+        sessionId,
+      }),
+    )
+  }
 
   res.json({ success: true, timing })
 })
@@ -162,6 +188,10 @@ router.patch("/:sessionId/sets/:setId", validateSetTiming, async (req: Request, 
   const setId = parseIntParam(String(req.params.setId), "set ID")
 
   const timing = await updateSetTiming(sessionId, setId, userId, req.body)
+
+  if (req.trainer)
+    sendToUser(userId, "trainer_set_recorded", trainerEventPayload(req, sessionId))
+
   res.json({ success: true, timing })
 })
 
@@ -179,6 +209,9 @@ router.post("/:sessionId/end", async (req: Request, res: Response) => {
     "friend_session_ended",
   )
 
+  if (req.trainer)
+    pushTrainerEvent(req, sessionId, "trainer_session_ended")
+
   res.json({ success: true, session })
 })
 
@@ -193,13 +226,13 @@ router.get("/:sessionId", async (req: Request, res: Response) => {
 // NOTE: Static paths (/split/:split, /) MUST come before the dynamic
 // /:sessionId routes so Express doesn't treat the literal as a session ID.
 
-router.delete("/demo", async (req: Request, res: Response) => {
+router.delete("/demo", denyTrainer, async (req: Request, res: Response) => {
   const userId = req.user!.id
   const deletedCount = await deleteDemoSessions(userId)
   res.json({ success: true, deletedCount })
 })
 
-router.delete("/split/:split", async (req: Request, res: Response) => {
+router.delete("/split/:split", denyTrainer, async (req: Request, res: Response) => {
   const userId = req.user!.id
   const split = String(req.params.split)
 
@@ -213,6 +246,25 @@ router.delete("/split/:split", async (req: Request, res: Response) => {
   })
 })
 
+
+// Trainer-mode WS events. req.user is the trainee (swapped by
+// applyTrainerContext) and req.trainer is the acting trainer, so the payload
+// carries both sides of the pair on every event.
+function trainerEventPayload(req: Request, sessionId: number) {
+  return {
+    traineeId: req.user!.id,
+    trainerId: req.trainer!.userId,
+    trainerUsername: req.trainer!.username,
+    sessionId,
+  }
+}
+
+/** trainer_session_started / trainer_session_ended go to both sides. */
+function pushTrainerEvent(req: Request, sessionId: number, type: string): void {
+  const payload = trainerEventPayload(req, sessionId)
+  sendToUser(req.user!.id, type, payload)
+  sendToUser(req.trainer!.userId, type, payload)
+}
 
 async function getSessionWatchers(userId: number): Promise<{ to_user_id: number }[]> {
   const [watchers] = await pool.execute<any[]>(

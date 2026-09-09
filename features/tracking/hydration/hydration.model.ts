@@ -82,8 +82,10 @@ export async function setHydrationSettings(userId: number, settings: Partial<{ g
   const goal = settings.goalMl ?? null
   const err = settings.measurementErrorPercent ?? null
   await pool.execute(
+    // COALESCE on insert: the client may send only one of the two, and the
+    // columns are NOT NULL.
     `INSERT INTO hydration_settings (user_id, goal_ml, measurement_error_percent)
-     VALUES (?, ?, ?)
+     VALUES (?, COALESCE(?, DEFAULT(goal_ml)), COALESCE(?, DEFAULT(measurement_error_percent)))
      ON DUPLICATE KEY UPDATE
        goal_ml = COALESCE(VALUES(goal_ml), goal_ml),
        measurement_error_percent = COALESCE(VALUES(measurement_error_percent), measurement_error_percent),

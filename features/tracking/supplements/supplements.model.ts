@@ -157,7 +157,7 @@ export async function listSupplementSummaries(
   const supplements = await listSupplements(userId)
   if (supplements.length === 0) return []
 
-  const [rows] = await pool.execute<(RowDataPacket & { supplement_id: number; day: Date })[]>(
+  const [rows] = await pool.execute<(RowDataPacket & { supplement_id: number; day: string })[]>(
     `SELECT supplement_id, DATE(taken_at) AS day
      FROM supplement_log
      WHERE user_id = ?
@@ -166,15 +166,14 @@ export async function listSupplementSummaries(
     [userId],
   )
 
-  const daysBySupplement = new Map<number, Date[]>()
+  const daysBySupplement = new Map<number, string[]>()
   for (const row of rows) {
     const list = daysBySupplement.get(row.supplement_id)
     if (list) list.push(row.day)
     else daysBySupplement.set(row.supplement_id, [row.day])
   }
 
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
+  const today = utcDay(new Date())
 
   return supplements.map((s) => {
     const days = daysBySupplement.get(s.id) ?? []
@@ -187,36 +186,38 @@ export async function listSupplementSummaries(
       reminderTime: s.reminderTime,
       color: s.color,
       icon: s.icon,
-      takenToday: days.length > 0 && days[0].getTime() === today.getTime(),
+      takenToday: days[0] === today,
       streak: streakFromDays(days),
     }
   })
 }
 
+/**
+ * YYYY-MM-DD in UTC, the form MySQL hands back for DATE(...) — the pool runs
+ * with `dateStrings: true`, so these columns arrive as strings and must not be
+ * parsed into a Date and read with local getters.
+ */
+function utcDay(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+
 /** Shared by getStreak and listSupplementSummaries — days must be sorted DESC. */
-function streakFromDays(days: Date[]): number {
+function streakFromDays(days: string[]): number {
   if (!days.length) return 0
 
-  let streak = 0
-  let expected = new Date()
-  expected.setHours(0, 0, 0, 0)
+  // A streak may run up to today or up to yesterday; today being unlogged
+  // doesn't break it yet.
+  const cursor = new Date()
+  if (days[0] !== utcDay(cursor)) {
+    cursor.setUTCDate(cursor.getUTCDate() - 1)
+    if (days[0] !== utcDay(cursor)) return 0
+  }
 
-  for (const raw of days) {
-    const day = new Date(raw)
-    day.setHours(0, 0, 0, 0)
-    if (
-      streak === 0 &&
-      (day.getTime() === expected.getTime() ||
-        day.getTime() === expected.getTime() - 86400000)
-    ) {
-      streak++
-      expected = new Date(day.getTime() - 86400000)
-      continue
-    }
-    if (day.getTime() === expected.getTime()) {
-      streak++
-      expected = new Date(day.getTime() - 86400000)
-    } else break
+  let streak = 0
+  for (const day of days) {
+    if (day !== utcDay(cursor)) break
+    streak++
+    cursor.setUTCDate(cursor.getUTCDate() - 1)
   }
   return streak
 }
@@ -344,7 +345,7 @@ export async function getStreak(
   userId: number,
   supplementId: number,
 ): Promise<number> {
-  const [rows] = await pool.execute<(RowDataPacket & { day: Date })[]>(
+  const [rows] = await pool.execute<(RowDataPacket & { day: string })[]>(
     `SELECT DATE(taken_at) AS day
      FROM supplement_log
      WHERE user_id = ? AND supplement_id = ?

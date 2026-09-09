@@ -4,7 +4,6 @@ export interface Friend {
   friendUserId: number
   username: string
   name: string
-  email: string
 }
 
 export interface FriendRequest {
@@ -14,7 +13,6 @@ export interface FriendRequest {
   createdAt: Date
   username: string
   name: string
-  email: string
 }
 
 type FriendshipStatus =
@@ -36,6 +34,7 @@ export type PermissionType =
   | "program"
   | "joint_session"
   | "watch_session"
+  | "trainer"
 
 export interface Permission {
   id: number

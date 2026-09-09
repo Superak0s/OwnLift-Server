@@ -47,6 +47,6 @@ describe("menstrual routes", () => {
     expect(typeof del.body.removedPredictions).toBe("boolean")
 
     const again = await request(app).delete(`/api/tracking/menstrual/${entryId}`).set(auth(u.token))
-    expect(again.status).toBe(400)
+    expect(again.status).toBe(404)
   })
 })

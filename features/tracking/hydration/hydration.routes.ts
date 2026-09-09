@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
 import { queryLimit, parseIntParam } from "@/middleware/validation.js"
 import {
+  NotFoundError,
   ValidationError,
 } from "@/middleware/errorHandler.js"
 import {
@@ -53,7 +54,7 @@ router.post("/settings", async (req: Request, res: Response) => {
 router.delete("/:id", async (req: Request, res: Response) => {
   const id = parseIntParam(String(req.params.id), "hydration entry ID")
   const deleted = await deleteHydrationEntry(req.user!.id, id)
-  if (!deleted) throw new ValidationError("Hydration entry not found")
+  if (!deleted) throw new NotFoundError("Hydration entry")
   res.json({ success: true })
 })
 

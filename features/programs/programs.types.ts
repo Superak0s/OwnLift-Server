@@ -3,6 +3,8 @@ export interface Exercise {
   primaryMuscles?: string[]
   secondaryMuscles?: string[]
   sets: number
+  /** Free-text per-exercise rep target ("10", "8-12"); absent when not prescribed. */
+  reps?: string
   /** Canonical id from the bundled exercise DB; null = custom exercise. */
   exerciseId?: string | null
 }
@@ -12,6 +14,7 @@ interface ExerciseWithSets {
   name: string
   primaryMuscles: string[]
   secondaryMuscles: string[]
+  reps?: string
   exerciseId?: string | null
   setsBySplit: Record<string, number>
 }

@@ -108,13 +108,12 @@ export async function getFriends(userId: number): Promise<Friend[]> {
     `SELECT f.id AS friendshipId, f.created_at AS friendsSince,
        CASE WHEN f.user_id = ? THEN f.friend_id ELSE f.user_id END AS friendUserId,
        CASE WHEN f.user_id = ? THEN u2.username ELSE u1.username END AS username,
-       CASE WHEN f.user_id = ? THEN u2.name ELSE u1.name END AS name,
-       CASE WHEN f.user_id = ? THEN u2.email ELSE u1.email END AS email
+       CASE WHEN f.user_id = ? THEN u2.name ELSE u1.name END AS name
      FROM friendships f
      JOIN users u1 ON f.user_id = u1.id JOIN users u2 ON f.friend_id = u2.id
      WHERE (f.user_id = ? OR f.friend_id = ?) AND f.status = 'accepted'
      ORDER BY f.accepted_at DESC LIMIT 500`,
-    [userId, userId, userId, userId, userId, userId],
+    [userId, userId, userId, userId, userId],
   )
   return rows
 }
@@ -123,7 +122,7 @@ export async function getPendingRequests(
   userId: number,
 ): Promise<FriendRequest[]> {
   const [rows] = await pool.execute<(FriendRequest & RowDataPacket)[]>(
-    `SELECT f.id AS friendshipId, f.user_id AS userId, f.created_at AS createdAt, u.username, u.name, u.email
+    `SELECT f.id AS friendshipId, f.user_id AS userId, f.created_at AS createdAt, u.username, u.name
      FROM friendships f JOIN users u ON f.user_id = u.id
      WHERE f.friend_id = ? AND f.status = 'pending' ORDER BY f.created_at DESC LIMIT ?`,
     [userId, PENDING_REQUESTS_LIMIT],
@@ -135,7 +134,7 @@ export async function getSentRequests(
   userId: number,
 ): Promise<FriendRequest[]> {
   const [rows] = await pool.execute<(FriendRequest & RowDataPacket)[]>(
-    `SELECT f.id AS friendshipId, f.friend_id AS friendId, f.created_at AS createdAt, u.username, u.name, u.email
+    `SELECT f.id AS friendshipId, f.friend_id AS friendId, f.created_at AS createdAt, u.username, u.name
      FROM friendships f JOIN users u ON f.friend_id = u.id
      WHERE f.user_id = ? AND f.status = 'pending' ORDER BY f.created_at DESC LIMIT ?`,
     [userId, PENDING_REQUESTS_LIMIT],

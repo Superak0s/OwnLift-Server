@@ -1,11 +1,12 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
+import { applyTrainerContext } from "@/middleware/trainerContext.js"
 import { ValidationError } from "@/middleware/errorHandler.js"
 import { getAnalytics } from "./analytics.model.js"
 
 const router: Router = Router()
 
-router.get("/", authenticateToken, async (req: Request, res: Response) => {
+router.get("/", authenticateToken, applyTrainerContext, async (req: Request, res: Response) => {
   const userId = req.user!.id
   const { dayNumber } = req.query
   const split = req.query.split as string | undefined

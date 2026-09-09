@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS set_timings (
   reps            INT                        DEFAULT NULL,
   note            TEXT                       DEFAULT NULL,
   is_warmup       TINYINT(1)      NOT NULL   DEFAULT 0,
+  rpe             TINYINT UNSIGNED           DEFAULT NULL,   -- rate of perceived exertion 1-10; NULL = not rated
   machine_name    VARCHAR(100)               DEFAULT NULL,   -- machine/setup the set was performed on
   created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -230,7 +231,7 @@ CREATE TABLE IF NOT EXISTS sharing_permissions (
   id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
   from_user_id    INT UNSIGNED    NOT NULL,
   to_user_id      INT UNSIGNED    NOT NULL,
-  permission_type ENUM('history','analytics','program','joint_session','watch_session') NOT NULL,
+  permission_type ENUM('history','analytics','program','joint_session','watch_session','trainer') NOT NULL,
   payload         TEXT                       DEFAULT NULL,  -- JSON
   created_at      DATETIME        NOT NULL,
   updated_at      DATETIME        NOT NULL,

@@ -34,6 +34,15 @@ export const pool: Pool = mysql.createPool({
   decimalNumbers: true,
 });
 
+// Every timestamp this server writes is UTC (see formatDateForMySQL), so the
+// connection must read them back as UTC too — otherwise NOW(), CURDATE() and
+// the CURRENT_TIMESTAMP column defaults sit at the box's local offset and
+// "today" comparisons drift by that many hours. Pinned here rather than left
+// to the operator's my.cnf, which usually says SYSTEM.
+pool.on("connection", (connection) => {
+  connection.query("SET time_zone = '+00:00'")
+});
+
 /**
  * Formats a Date or date string as a MySQL DATETIME string (YYYY-MM-DD HH:MM:SS).
  * Uses UTC methods so the stored value matches UTC regardless of the server's
@@ -43,6 +52,19 @@ export const pool: Pool = mysql.createPool({
 export function formatDateForMySQL(date: string | Date): string {
   const d = date instanceof Date ? date : new Date(date)
   return d.toISOString().slice(0, 19).replace("T", " ")
+}
+
+/**
+ * Parse a DATETIME the driver handed back. The pool runs with
+ * `dateStrings: true` and everything is stored UTC, but "2026-09-08 22:45:33"
+ * carries no zone, so a bare `new Date(...)` reads it as local time and shifts
+ * it by the machine's offset. Date-only and already-zoned values pass through.
+ */
+export function parseMySQLDate(value: string | Date): Date {
+  if (value instanceof Date) return value
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(value)
+    ? new Date(value.replace(" ", "T") + "Z")
+    : new Date(value)
 }
 
 async function createDatabaseIfNotExists(): Promise<void> {

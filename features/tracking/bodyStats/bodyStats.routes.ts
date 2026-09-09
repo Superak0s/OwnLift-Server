@@ -99,25 +99,24 @@ router.post("/bodyfat/log", async (req: Request, res: Response) => {
     )
   }
 
-  if (!userData.heightCm) {
-    throw new ValidationError(
-      "User height not set. Please set your height in settings first.",
+  // Height is only used to re-derive the percentage as a cross-check and to
+  // stamp the entry — the client already did the maths with its own copy. A
+  // profile without a height skips the check instead of rejecting the log.
+  if (userData.heightCm) {
+    const calculatedPercentage = calculateBodyFatPercentage(
+      sex,
+      userData.heightCm,
+      waistCm,
+      neckCm,
+      hipCm,
     )
-  }
 
-  const calculatedPercentage = calculateBodyFatPercentage(
-    sex,
-    userData.heightCm,
-    waistCm,
-    neckCm,
-    hipCm,
-  )
-
-  if (Math.abs(calculatedPercentage - percentage) > 0.5) {
-    logger.warn("Body fat calculation mismatch:", {
-      provided: percentage,
-      calculated: calculatedPercentage,
-    })
+    if (Math.abs(calculatedPercentage - percentage) > 0.5) {
+      logger.warn("Body fat calculation mismatch:", {
+        provided: percentage,
+        calculated: calculatedPercentage,
+      })
+    }
   }
 
   const entry = await logBodyFat(

@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
 import { queryLimit, parseIntParam } from "@/middleware/validation.js"
 import {
-  ValidationError,
+  NotFoundError,
 } from "@/middleware/errorHandler.js"
 import {
   logSoreness,
@@ -35,7 +35,7 @@ router.get("/", async (req: Request, res: Response) => {
 router.delete("/:id", async (req: Request, res: Response) => {
   const id = parseIntParam(String(req.params.id), "soreness entry ID")
   const deleted = await deleteSorenessEntry(req.user!.id, id)
-  if (!deleted) throw new ValidationError("Soreness entry not found")
+  if (!deleted) throw new NotFoundError("Soreness entry")
   res.json({ success: true })
 })
 

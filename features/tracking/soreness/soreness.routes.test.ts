@@ -25,6 +25,6 @@ describe("soreness routes", () => {
     expect(del.status).toBe(200)
 
     const again = await request(app).delete(`/api/tracking/soreness/${entryId}`).set(auth(u.token))
-    expect(again.status).toBe(400)
+    expect(again.status).toBe(404)
   })
 })

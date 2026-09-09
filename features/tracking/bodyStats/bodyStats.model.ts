@@ -104,7 +104,7 @@ export async function logBodyFat(
   waistCm: number,
   neckCm: number,
   hipCm: number | null,
-  heightCm: number,
+  heightCm: number | null,
   gender: string,
   calculatedAt: string | Date,
 ): Promise<BodyFatEntry> {

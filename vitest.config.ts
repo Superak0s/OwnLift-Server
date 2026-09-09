@@ -14,8 +14,10 @@ export default defineConfig({
     globalSetup: ["./tests/global-setup.ts"],
     testTimeout: 20000,
     hookTimeout: 30000,
+    exclude: ["**/node_modules/**", "dist/**"],
     coverage: {
       provider: "v8",
+      reporter: ["text", "lcov"],
       include: ["**/*.ts"],
       exclude: [
         "node_modules/**",

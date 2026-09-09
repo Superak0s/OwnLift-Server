@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
+import { parseMySQLDate } from "@/config/database.js"
 import {
   ValidationError,
   NotFoundError,
@@ -153,7 +154,7 @@ router.post("/joint-sessions/invites/:inviteId/accept", async (req: Request, res
   const inviteId = parseIntParam(String(req.params.inviteId), "inviteId")
 
   const invite = await getInvite(inviteId)
-  if (!invite || new Date(invite.expires_at) < new Date())
+  if (!invite || parseMySQLDate(invite.expires_at) < new Date())
     throw new NotFoundError("Invite")
   if (invite.to_user_id !== req.user!.id)
     throw new ForbiddenError("This invite is not for you")

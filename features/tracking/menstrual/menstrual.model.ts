@@ -213,8 +213,10 @@ export async function setMenstrualSettings(
   const pd = settings.periodDays ?? null
   const cl = settings.cycleLengthDays ?? null
   await pool.execute(
+    // COALESCE on insert: the client may send only one of the two, and the
+    // columns are NOT NULL.
     `INSERT INTO menstrual_settings (user_id, period_days, cycle_length_days)
-     VALUES (?, ?, ?)
+     VALUES (?, COALESCE(?, DEFAULT(period_days)), COALESCE(?, DEFAULT(cycle_length_days)))
      ON DUPLICATE KEY UPDATE
        period_days = COALESCE(VALUES(period_days), period_days),
        cycle_length_days = COALESCE(VALUES(cycle_length_days), cycle_length_days),

@@ -84,12 +84,16 @@ router.get("/me", authenticateToken, async (req: Request, res: Response) => {
 })
 
 router.put("/profile", authenticateToken, validateProfileUpdate, async (req: Request, res: Response) => {
-  const { name, email } = req.body
-  const updates: Record<string, string> = {}
+  const { name, email, heightCm } = req.body
+  const updates: Record<string, string | number> = {}
 
   if (name !== undefined) updates.name = name
 
   if (email !== undefined) updates.email = email
+
+  // The app keeps height on-device; this is the only way it reaches the
+  // server, where the body-fat entry records the height it was measured at.
+  if (heightCm !== undefined) updates.height_cm = Number(heightCm)
 
   if (Object.keys(updates).length === 0) {
     return res.json({
