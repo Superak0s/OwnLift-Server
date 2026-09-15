@@ -1,6 +1,6 @@
 {
   "name": "ownlift-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Node.js server for processing workout files and splitting exercises by day",
   "main": "server.js",
   "scripts": {
