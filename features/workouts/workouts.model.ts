@@ -1,16 +1,19 @@
 import { pool, formatDateForMySQL, parseMySQLDate } from "@/config/database.js"
 import type { PoolConnection } from "mysql2/promise"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
-import { NotFoundError, ForbiddenError } from "@/middleware/errorHandler.js"
+import {
+  NotFoundError,
+  ForbiddenError,
+  throwCheckViolation,
+} from "@/middleware/errorHandler.js"
 
 interface SetTiming {
   id: number
   sessionId: number
   exerciseId: number
-  exerciseIndex: number | null
   exerciseName: string
-  exercisePrimaryMuscles: string[] | null
-  exerciseSecondaryMuscles: string[] | null
+  exercisePrimaryMuscles: string[]
+  exerciseSecondaryMuscles: string[]
   setIndex: number
   startTime: string
   endTime: string
@@ -50,33 +53,48 @@ interface RecordSetResult {
   machineName: string | null
 }
 
-// The API speaks camelCase, MySQL speaks snake_case. Every session/set read
+// The API speaks camelCase, MySQL speaks snake_case. Every workout/set read
 // aliases its columns here so rows can go straight to res.json() without a
 // mapping layer — alias any new column the same way.
-const SESSION_COLS = `s.id, s.user_id AS userId, s.day_number AS dayNumber,
-  s.day_title AS dayTitle, s.primary_muscles AS primaryMuscles,
-  s.secondary_muscles AS secondaryMuscles, s.start_time AS startTime,
-  s.end_time AS endTime, s.total_duration AS totalDuration,
-  s.completed_sets AS completedSets, s.\`split\`, s.is_demo AS isDemo`
+//
+// The REST surface still calls a workout a "session" (mount: /api/sessions,
+// field: sessionId) even though the tables are `workouts` / `workout_sets`.
+// The rename was to stop "sessions" reading as login state next to
+// refresh_tokens; it was not a wire break.
+//
+// primaryMuscles/secondaryMuscles are NOT columns on `workouts` — they are read
+// through program_day_id, so editing a program day relabels its history instead
+// of leaving stale copies behind. Every query using these columns must carry
+// WORKOUT_FROM's LEFT JOIN.
+const WORKOUT_COLS = `w.id, w.user_id AS userId, w.day_number AS dayNumber,
+  w.day_title AS dayTitle, w.start_time AS startTime,
+  w.end_time AS endTime, w.total_duration AS totalDuration,
+  w.completed_sets AS completedSets, w.split, w.is_demo AS isDemo,
+  pd.primary_muscles AS primaryMuscles, pd.secondary_muscles AS secondaryMuscles`
 
-const TIMING_COLS = `st.id, st.session_id AS sessionId, st.exercise_id AS exerciseId,
-  st.exercise_index AS exerciseIndex, st.set_index AS setIndex,
-  st.start_time AS startTime, st.end_time AS endTime,
-  st.set_duration AS setDuration, st.rest_time AS restTime,
-  st.weight, st.reps, st.note, st.is_warmup AS isWarmup, st.rpe,
-  st.machine_name AS machineName, e.name AS exerciseName,
+// LEFT, not INNER: program_day_id is ON DELETE SET NULL, so a workout whose
+// program was deleted must still appear in history (with no muscle labels).
+const WORKOUT_FROM = `FROM workouts w
+  LEFT JOIN program_days pd ON w.program_day_id = pd.id`
+
+const SET_COLS = `ws.id, ws.workout_id AS sessionId, ws.exercise_id AS exerciseId,
+  ws.set_index AS setIndex,
+  ws.start_time AS startTime, ws.end_time AS endTime,
+  ws.set_duration AS setDuration, ws.rest_time AS restTime,
+  ws.weight, ws.reps, ws.note, ws.is_warmup AS isWarmup, ws.rpe,
+  ws.machine_name AS machineName, e.name AS exerciseName,
   e.primary_muscles AS exercisePrimaryMuscles,
   e.secondary_muscles AS exerciseSecondaryMuscles`
 
-interface SessionRow extends RowDataPacket {
+interface WorkoutRow extends RowDataPacket {
   id: number
   userId: number
   dayNumber: number
   dayTitle: string
-  // JSON column — mysql2 auto-parses this to string[] for most rows, but
-  // some legacy rows hold a plain comma-joined string. See parseMuscleGroups.
-  primaryMuscles: string | string[]
-  secondaryMuscles: string | string[]
+  // JSON columns from program_days; mysql2 hands them back already parsed, and
+  // NULL only when the workout has no program_day link.
+  primaryMuscles: string[] | null
+  secondaryMuscles: string[] | null
   startTime: Date | string
   endTime: Date | string | null
   totalDuration: number | null
@@ -87,14 +105,13 @@ interface SessionRow extends RowDataPacket {
   setCount?: number
 }
 
-interface SetTimingRow extends RowDataPacket {
+interface WorkoutSetRow extends RowDataPacket {
   id: number
   sessionId: number
   exerciseId: number
-  exerciseIndex: number | null
   exerciseName: string
-  exercisePrimaryMuscles: string[] | null
-  exerciseSecondaryMuscles: string[] | null
+  exercisePrimaryMuscles: string[]
+  exerciseSecondaryMuscles: string[]
   setIndex: number
   startTime: Date | string
   endTime: Date | string
@@ -109,36 +126,53 @@ interface SetTimingRow extends RowDataPacket {
 }
 
 /**
- * Parse the `primary_muscles` / `secondary_muscles` JSON columns into a
- * string[].
+ * Normalise a muscle-group JSON column to string[].
  *
- * The columns are MySQL JSON, and mysql2 auto-parses JSON-typed columns for
- * you — so most rows arrive here as an actual array already, not a string.
- * Some older rows apparently hold a plain comma-joined string instead (e.g.
- * "Glutes,Hamstrings"), predating whatever migration/version put this column
- * on JSON.stringify'd data.
- *
- * This handles all three shapes that can show up: an array (the common
- * case — already parsed by the driver), a JSON-encoded string (in case a
- * connection/config ever returns JSON columns as raw text instead), or a
- * legacy comma-joined string. Anything else (null, empty, unexpected type)
- * becomes [].
+ * `exercises` and `program_days` declare these columns NOT NULL DEFAULT
+ * (JSON_ARRAY()), and mysql2 parses JSON columns for you, so a row value is
+ * always an array. The only NULL that reaches here comes from a LEFT JOIN that
+ * found no program day.
  */
 export function parseMuscleGroups(raw: unknown): string[] {
-  if (raw == null) return []
-  if (Array.isArray(raw)) {
-    return raw.filter((g): g is string => typeof g === "string")
+  return Array.isArray(raw)
+    ? raw.filter((g): g is string => typeof g === "string")
+    : []
+}
+
+/**
+ * `exercises` is shared by everyone on the instance and keyed by name, so the
+ * first client to log a name decides its muscle groups. When that client sent
+ * none, the row stays label-less forever even though every later log carries
+ * them — so fill in the blanks.
+ *
+ * Only the blanks: overwriting a non-empty value would relabel the exercise
+ * under every other user's history. That is the same reason
+ * renameExerciseInHistory re-points rows instead of mutating the shared one.
+ */
+async function backfillMuscles(
+  row: RowDataPacket,
+  primaryMuscles: string[],
+  secondaryMuscles: string[],
+): Promise<void> {
+  const fills: string[] = []
+  const params: string[] = []
+  if (!parseMuscleGroups(row.primaryMuscles).length && primaryMuscles.length) {
+    fills.push("primary_muscles = ?")
+    params.push(JSON.stringify(primaryMuscles))
   }
-  if (typeof raw !== "string" || !raw) return []
-  try {
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return raw
-      .split(",")
-      .map((g) => g.trim())
-      .filter(Boolean)
+  if (
+    !parseMuscleGroups(row.secondaryMuscles).length &&
+    secondaryMuscles.length
+  ) {
+    fills.push("secondary_muscles = ?")
+    params.push(JSON.stringify(secondaryMuscles))
   }
+  if (fills.length === 0) return
+
+  await pool.execute(`UPDATE exercises SET ${fills.join(", ")} WHERE id = ?`, [
+    ...params,
+    row.id,
+  ])
 }
 
 async function findOrCreateExercise(
@@ -151,10 +185,15 @@ async function findOrCreateExercise(
   // even when its ON DUPLICATE KEY branch is a no-op — a redo-log entry and a
   // row lock per set, for nothing.
   const [hit] = await pool.execute<RowDataPacket[]>(
-    `SELECT id FROM exercises WHERE name = ?`,
+    `SELECT id, primary_muscles AS primaryMuscles,
+            secondary_muscles AS secondaryMuscles
+     FROM exercises WHERE name = ?`,
     [name],
   )
-  if (hit[0]) return hit[0].id
+  if (hit[0]) {
+    await backfillMuscles(hit[0], primaryMuscles, secondaryMuscles)
+    return hit[0].id
+  }
 
   // First sighting of this name. The LAST_INSERT_ID trick returns the id
   // atomically whether this is a real insert or a duplicate-key no-op, which
@@ -170,24 +209,42 @@ async function findOrCreateExercise(
   return rows[0].id
 }
 
+/**
+ * The program day this workout is running, or null when the user has no
+ * program (or none covering this day number). This is the only place the link
+ * is resolved; muscle labels are then read through it forever.
+ */
+async function findProgramDayId(
+  userId: number,
+  dayNumber: number,
+): Promise<number | null> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT pd.id FROM program_days pd
+     JOIN programs p ON pd.program_id = p.id
+     WHERE p.user_id = ? AND pd.day_number = ?`,
+    [userId, dayNumber],
+  )
+  return rows[0]?.id ?? null
+}
+
 export async function createSession(
   userId: number,
   dayNumber: number,
   dayTitle: string,
-  primaryMuscles: string[],
-  secondaryMuscles: string[],
   startTime: string | Date | null = null,
   isDemo = false,
+  split: string | null = null,
 ): Promise<number> {
   const ts = formatDateForMySQL(startTime ? startTime : new Date())
   const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO sessions (user_id, day_number, day_title, primary_muscles, secondary_muscles, start_time, is_demo) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO workouts (user_id, program_day_id, day_number, day_title, split, start_time, is_demo)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
       userId,
+      await findProgramDayId(userId, dayNumber),
       dayNumber,
       dayTitle,
-      JSON.stringify(primaryMuscles),
-      JSON.stringify(secondaryMuscles),
+      split,
       ts,
       isDemo ? 1 : 0,
     ],
@@ -197,6 +254,7 @@ export async function createSession(
 
 export async function recordSetTiming(
   sessionId: number,
+  userId: number,
   exerciseName: string,
   setIndex: number,
   startTime: string,
@@ -219,24 +277,40 @@ export async function recordSetTiming(
   const end = new Date(endTime)
   const setDuration = Math.round((end.getTime() - start.getTime()) / 1000)
 
-  const [lastSets] = await pool.execute<RowDataPacket[]>(
-    `SELECT end_time FROM set_timings WHERE session_id = ? ORDER BY created_at DESC LIMIT 1`,
-    [sessionId],
-  )
-  const restTime: number | null =
-    lastSets.length > 0
-      ? Math.round(
-          (start.getTime() - parseMySQLDate(lastSets[0].end_time).getTime()) /
-            1000,
-        )
-      : null
-
   const connection: PoolConnection = await pool.getConnection()
   try {
     await connection.beginTransaction()
 
+    // The counter bump doubles as the ownership check, so there is no separate
+    // SELECT before this and no window between checking and inserting. It runs
+    // first for that reason: the workout_sets FK only proves the workout
+    // exists, not that the caller owns it. completed_sets always changes, so
+    // affectedRows === 0 means no such workout for this user, full stop.
+    const [owned] = await connection.execute<ResultSetHeader>(
+      `UPDATE workouts SET completed_sets = completed_sets + 1
+       WHERE id = ? AND user_id = ?`,
+      [sessionId, userId],
+    )
+    // Thrown, not rolled back here — the catch below owns the rollback.
+    if (owned.affectedRows === 0)
+      throw new ForbiddenError("Session not found or unauthorized")
+
+    const [lastSets] = await connection.execute<RowDataPacket[]>(
+      // created_at has 1s resolution — id breaks ties so "previous set" is
+      // deterministic for sets logged in the same second.
+      `SELECT end_time FROM workout_sets WHERE workout_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [sessionId],
+    )
+    const restTime: number | null =
+      lastSets.length > 0
+        ? Math.round(
+            (start.getTime() - parseMySQLDate(lastSets[0].end_time).getTime()) /
+              1000,
+          )
+        : null
+
     const [result] = await connection.execute<ResultSetHeader>(
-      `INSERT INTO set_timings (session_id, exercise_id, set_index, start_time, end_time, set_duration, rest_time, weight, reps, note, is_warmup, rpe, machine_name)
+      `INSERT INTO workout_sets (workout_id, exercise_id, set_index, start_time, end_time, set_duration, rest_time, weight, reps, note, is_warmup, rpe, machine_name)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sessionId,
@@ -254,10 +328,6 @@ export async function recordSetTiming(
         machineName,
       ],
     )
-    await connection.execute(
-      `UPDATE sessions SET completed_sets = completed_sets + 1 WHERE id = ?`,
-      [sessionId],
-    )
 
     await connection.commit()
 
@@ -271,7 +341,8 @@ export async function recordSetTiming(
     }
   } catch (err) {
     await connection.rollback()
-    throw err
+    // ck_ws_times: an end before the start is a bad request, not a 500.
+    throw throwCheckViolation(err, "Set end time cannot be before start time")
   } finally {
     connection.release()
   }
@@ -292,7 +363,7 @@ interface UpdateSetTimingParams {
 }
 
 /**
- * Update a single recorded set. Verifies the set belongs to a session owned by
+ * Update a single recorded set. Verifies the set belongs to a workout owned by
  * the caller, applies only the provided fields, and recomputes set_duration if
  * either timestamp changes. Returns the updated row joined with its exercise.
  */
@@ -302,10 +373,10 @@ export async function updateSetTiming(
   userId: number,
   updates: UpdateSetTimingParams,
 ): Promise<SetTiming> {
-  const [owned] = await pool.execute<SetTimingRow[]>(
-    `SELECT st.start_time AS startTime, st.end_time AS endTime FROM set_timings st
-     JOIN sessions s ON st.session_id = s.id
-     WHERE st.id = ? AND st.session_id = ? AND s.user_id = ?`,
+  const [owned] = await pool.execute<WorkoutSetRow[]>(
+    `SELECT ws.start_time AS startTime, ws.end_time AS endTime FROM workout_sets ws
+     JOIN workouts w ON ws.workout_id = w.id
+     WHERE ws.id = ? AND ws.workout_id = ? AND w.user_id = ?`,
     [setId, sessionId, userId],
   )
   if (!owned[0]) throw new NotFoundError("Set")
@@ -344,16 +415,21 @@ export async function updateSetTiming(
 
   if (assignments.length > 0) {
     params.push(setId)
-    await pool.execute(
-      `UPDATE set_timings SET ${assignments.join(", ")} WHERE id = ?`,
-      params,
-    )
+    try {
+      await pool.execute(
+        `UPDATE workout_sets SET ${assignments.join(", ")} WHERE id = ?`,
+        params,
+      )
+    } catch (err) {
+      // ck_ws_times: an end before the start is a bad request, not a 500.
+      throw throwCheckViolation(err, "Set end time cannot be before start time")
+    }
   }
 
-  const [updated] = await pool.execute<SetTimingRow[]>(
-    `SELECT ${TIMING_COLS}
-     FROM set_timings st JOIN exercises e ON st.exercise_id = e.id
-     WHERE st.id = ?`,
+  const [updated] = await pool.execute<WorkoutSetRow[]>(
+    `SELECT ${SET_COLS}
+     FROM workout_sets ws JOIN exercises e ON ws.exercise_id = e.id
+     WHERE ws.id = ?`,
     [setId],
   )
   return updated[0] as unknown as SetTiming
@@ -361,10 +437,10 @@ export async function updateSetTiming(
 
 /**
  * Rename (and/or re-group) an exercise everywhere it appears in a split's
- * session history. Because the exercises table is shared globally (unique by
- * name), we re-point the matching set_timings rows at the target exercise
- * rather than mutating the shared exercise row. Returns the number of set rows
- * updated.
+ * workout history. Because the exercises table is shared globally (unique by
+ * name), we re-point the matching workout_sets rows at the target exercise
+ * rather than mutating the shared exercise row — which would rewrite every
+ * other user's history too. Returns the number of set rows updated.
  */
 export async function renameExerciseInHistory(
   userId: number,
@@ -381,11 +457,11 @@ export async function renameExerciseInHistory(
     secondaryMuscles ?? [],
   )
   const [result] = await pool.execute<ResultSetHeader>(
-    `UPDATE set_timings st
-     JOIN sessions s ON st.session_id = s.id
-     JOIN exercises e ON st.exercise_id = e.id
-     SET st.exercise_id = ?
-     WHERE s.user_id = ? AND s.\`split\` = ? AND e.name = ?`,
+    `UPDATE workout_sets ws
+     JOIN workouts w ON ws.workout_id = w.id
+     JOIN exercises e ON ws.exercise_id = e.id
+     SET ws.exercise_id = ?
+     WHERE w.user_id = ? AND w.split = ? AND e.name = ?`,
     [targetExerciseId, userId, split, oldName],
   )
   return result.affectedRows
@@ -393,18 +469,25 @@ export async function renameExerciseInHistory(
 
 export async function endSession(
   sessionId: number,
+  userId: number,
   endTime: string | Date | null = null,
 ): Promise<Session> {
   const ts = formatDateForMySQL(endTime ?? new Date())
+  // Scoped by user_id like every other statement in this file, rather than
+  // trusting the route to have checked first.
   await pool.execute(
-    `UPDATE sessions SET end_time = ?, total_duration = TIMESTAMPDIFF(SECOND, start_time, ?) WHERE id = ?`,
-    [ts, ts, sessionId],
+    `UPDATE workouts SET end_time = ?, total_duration = TIMESTAMPDIFF(SECOND, start_time, ?)
+     WHERE id = ? AND user_id = ?`,
+    [ts, ts, sessionId, userId],
   )
-  const [rows] = await pool.execute<SessionRow[]>(
-    `SELECT ${SESSION_COLS} FROM sessions s WHERE s.id = ?`,
-    [sessionId],
+  const [rows] = await pool.execute<WorkoutRow[]>(
+    `SELECT ${WORKOUT_COLS} ${WORKOUT_FROM} WHERE w.id = ? AND w.user_id = ?`,
+    [sessionId, userId],
   )
   const row = rows[0]
+  // The UPDATE reports 0 rows for an unchanged value as well as for a missing
+  // one, so ownership is decided by the read, not by affectedRows.
+  if (!row) throw new ForbiddenError("Session not found or unauthorized")
   return {
     ...row,
     primaryMuscles: parseMuscleGroups(row.primaryMuscles),
@@ -416,24 +499,29 @@ export async function getSessionDetails(
   sessionId: number,
   userId: number,
 ): Promise<Session> {
-  const [sessions] = await pool.execute<SessionRow[]>(
-    `SELECT ${SESSION_COLS}, u.name AS userName FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = ? AND s.user_id = ?`,
+  const [workouts] = await pool.execute<WorkoutRow[]>(
+    `SELECT ${WORKOUT_COLS}, u.name AS userName ${WORKOUT_FROM}
+     JOIN users u ON w.user_id = u.id WHERE w.id = ? AND w.user_id = ?`,
     [sessionId, userId],
   )
-  if (!sessions[0])
+  if (!workouts[0])
     throw new ForbiddenError("Session not found or unauthorized")
 
-  const [timings] = await pool.execute<SetTimingRow[]>(
-    `SELECT ${TIMING_COLS}
-     FROM set_timings st JOIN exercises e ON st.exercise_id = e.id
-     WHERE st.session_id = ? ORDER BY e.name ASC, st.set_index ASC, st.start_time ASC`,
+  const [sets] = await pool.execute<WorkoutSetRow[]>(
+    `SELECT ${SET_COLS}
+     FROM workout_sets ws JOIN exercises e ON ws.exercise_id = e.id
+     -- Insertion order IS the order the sets were performed, and it is the only
+     -- record of it since exercise_index was dropped. Sorting by exercise name
+     -- listed a workout alphabetically; sorting by set_index interleaved the
+     -- exercises. idx_ws_workout_created covers this exactly.
+     WHERE ws.workout_id = ? ORDER BY ws.created_at ASC, ws.id ASC`,
     [sessionId],
   )
   return {
-    ...sessions[0],
-    primaryMuscles: parseMuscleGroups(sessions[0].primaryMuscles),
-    secondaryMuscles: parseMuscleGroups(sessions[0].secondaryMuscles),
-    setTimings: timings,
+    ...workouts[0],
+    primaryMuscles: parseMuscleGroups(workouts[0].primaryMuscles),
+    secondaryMuscles: parseMuscleGroups(workouts[0].secondaryMuscles),
+    setTimings: sets,
   } as unknown as Session
 }
 
@@ -444,28 +532,28 @@ export async function getSessionHistory(
   limit = 30,
   includeTimings = false,
 ): Promise<Session[]> {
-  // setCount was a correlated (SELECT COUNT(*) FROM set_timings ...) — one
+  // setCount was a correlated (SELECT COUNT(*) FROM workout_sets ...) — one
   // index scan per returned row, up to 365 of them on a single request.
-  // sessions.completed_sets is incremented inside the same transaction that
+  // workouts.completed_sets is incremented inside the same transaction that
   // inserts the set (recordSetTiming) and nothing ever deletes a set, so the
   // column already holds exactly this number.
-  let q = `SELECT ${SESSION_COLS}, u.name AS userName, u.username,
-      s.completed_sets AS setCount
-     FROM sessions s JOIN users u ON s.user_id = u.id
-     WHERE s.user_id = ?`
+  let q = `SELECT ${WORKOUT_COLS}, u.name AS userName, u.username,
+      w.completed_sets AS setCount
+     ${WORKOUT_FROM} JOIN users u ON w.user_id = u.id
+     WHERE w.user_id = ?`
   const params: any[] = [userId]
   if (split) {
-    q += ` AND s.\`split\` = ?`
+    q += ` AND w.split = ?`
     params.push(split)
   }
   if (dayNumber != null) {
-    q += ` AND s.day_number = ?`
+    q += ` AND w.day_number = ?`
     params.push(dayNumber)
   }
-  q += ` ORDER BY s.start_time DESC LIMIT ?`
+  q += ` ORDER BY w.start_time DESC LIMIT ?`
   params.push(limit)
 
-  const [rows] = await pool.execute<SessionRow[]>(q, params)
+  const [rows] = await pool.execute<WorkoutRow[]>(q, params)
   if (!rows.length) return []
 
   const sessions: Session[] = rows.map((r) => ({
@@ -479,15 +567,15 @@ export async function getSessionHistory(
     const ids = sessions.map((s) => s.id)
     // ids come entirely from our own DB query above — safe to interpolate
     // placeholders. Never use this pattern with user-supplied values.
-    const [timings] = await pool.execute<SetTimingRow[]>(
-      `SELECT ${TIMING_COLS}
-       FROM set_timings st JOIN exercises e ON st.exercise_id = e.id
-       WHERE st.session_id IN (${ids.map(() => "?").join(",")})
-       ORDER BY st.session_id, st.set_index ASC`,
+    const [sets] = await pool.execute<WorkoutSetRow[]>(
+      `SELECT ${SET_COLS}
+       FROM workout_sets ws JOIN exercises e ON ws.exercise_id = e.id
+       WHERE ws.workout_id IN (${ids.map(() => "?").join(",")})
+       ORDER BY ws.workout_id ASC, ws.created_at ASC, ws.id ASC`,
       ids,
     )
     const bySession: Record<number, SetTiming[]> = {}
-    for (const t of timings) {
+    for (const t of sets) {
       if (!bySession[t.sessionId]) bySession[t.sessionId] = []
       bySession[t.sessionId].push(t as unknown as SetTiming)
     }
@@ -502,21 +590,19 @@ export async function deleteAllSessionsForSplit(
   userId: number,
   split: string,
 ): Promise<number> {
-  // set_timings rows are covered by ON DELETE CASCADE on fk_st_session, so
-  // deleting the parent sessions rows is the whole job — one statement, no
+  // workout_sets rows are covered by ON DELETE CASCADE on fk_ws_workout, so
+  // deleting the parent workouts rows is the whole job — one statement, no
   // transaction needed.
   const [result] = await pool.execute<ResultSetHeader>(
-    `DELETE FROM sessions WHERE user_id = ? AND \`split\` = ?`,
+    `DELETE FROM workouts WHERE user_id = ? AND split = ?`,
     [userId, split],
   )
   return result.affectedRows
 }
 
 export async function deleteDemoSessions(userId: number): Promise<number> {
-  // set_timings rows are covered by ON DELETE CASCADE on fk_st_session, so
-  // deleting the parent sessions rows is the whole job.
   const [result] = await pool.execute<ResultSetHeader>(
-    `DELETE FROM sessions WHERE user_id = ? AND is_demo = 1`,
+    `DELETE FROM workouts WHERE user_id = ? AND is_demo = 1`,
     [userId],
   )
   return result.affectedRows
@@ -527,31 +613,29 @@ export async function updateSessionSplit(
   userId: number,
   split: string,
 ): Promise<boolean> {
-  const [result] = await pool.execute<ResultSetHeader>(`UPDATE sessions SET \`split\` = ? WHERE id = ? AND user_id = ?`, [
-    split,
-    sessionId,
-    userId,
-  ])
-  if (result.affectedRows === 0)
-    throw new NotFoundError("Session")
+  const [result] = await pool.execute<ResultSetHeader>(
+    `UPDATE workouts SET split = ? WHERE id = ? AND user_id = ?`,
+    [split, sessionId, userId],
+  )
+  if (result.affectedRows === 0) throw new NotFoundError("Session")
   return true
 }
 
-// A session is only ever closed by the client calling POST /:sessionId/end.
+// A workout is only ever closed by the client calling POST /:sessionId/end.
 // If the app is killed, crashes, or the device dies mid-workout, that call
-// never happens and the session (and the day it belongs to) stays open in
+// never happens and the workout (and the day it belongs to) stays open in
 // the DB forever — no server-side backstop existed for this. This function
-// backs a periodic job (see jobs/sessionCleanup.ts) that ends sessions nobody
+// backs a periodic job (see jobs/sessionCleanup.ts) that ends workouts nobody
 // is actively touching anymore, using the same 30-minute inactivity threshold
 // the client already applies locally (see WorkoutContext's
 // checkAndEndStaleSession).
 
 /**
- * End every open session (end_time IS NULL) whose last activity — the end_time
+ * End every open workout (end_time IS NULL) whose last activity — the end_time
  * of its most recently recorded set, or its start_time if no set was ever
  * recorded — is older than `thresholdMinutes` ago.
  *
- * Sessions are ended AT their last activity, not at "now", so total_duration
+ * Workouts are ended AT their last activity, not at "now", so total_duration
  * reflects when the user actually stopped rather than whenever the cleanup job
  * happened to run. Returns how many were ended.
  */
@@ -559,25 +643,25 @@ export async function endStaleSessions(
   thresholdMinutes: number,
 ): Promise<number> {
   const [result] = await pool.execute<ResultSetHeader>(
-    // Correlated, not a derived table: grouping all of set_timings by
-    // session_id materialised the entire table every run, forever, to find the
+    // Correlated, not a derived table: grouping all of workout_sets by
+    // workout_id materialised the entire table every run, forever, to find the
     // handful of rows where end_time IS NULL. This way the lookup runs only
-    // for open sessions and rides the session_id index prefix.
+    // for open workouts and rides the workout_id index prefix.
     //
-    // total_duration reads s.end_time set on the line above it — MySQL
+    // total_duration reads w.end_time set on the line above it — MySQL
     // evaluates UPDATE assignments left to right and later ones see the new
     // values. That is MySQL-specific, and the reason the subquery isn't
     // repeated a third time here.
-    `UPDATE sessions s
-     SET s.end_time = COALESCE(
-           (SELECT MAX(st.end_time) FROM set_timings st WHERE st.session_id = s.id),
-           s.start_time
+    `UPDATE workouts w
+     SET w.end_time = COALESCE(
+           (SELECT MAX(ws.end_time) FROM workout_sets ws WHERE ws.workout_id = w.id),
+           w.start_time
          ),
-         s.total_duration = TIMESTAMPDIFF(SECOND, s.start_time, s.end_time)
-     WHERE s.end_time IS NULL
+         w.total_duration = TIMESTAMPDIFF(SECOND, w.start_time, w.end_time)
+     WHERE w.end_time IS NULL
        AND COALESCE(
-             (SELECT MAX(st.end_time) FROM set_timings st WHERE st.session_id = s.id),
-             s.start_time
+             (SELECT MAX(ws.end_time) FROM workout_sets ws WHERE ws.workout_id = w.id),
+             w.start_time
            ) < (NOW() - INTERVAL ? MINUTE)`,
     [thresholdMinutes],
   )

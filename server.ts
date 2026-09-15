@@ -24,7 +24,7 @@ if (!process.env.ALLOWED_ORIGINS)
 
 import { testDatabaseConnection, pool } from "./config/database.js"
 import { createWsServer, closeWsServer } from "./ws/wsServer.js"
-import { registerRoutes } from "./routes.js"
+import { registerRoutes, localOnlyFeatures } from "./routes.js"
 import { errorHandler } from "./middleware/errorHandler.js"
 import { authenticateToken } from "./middleware/auth.js"
 
@@ -137,10 +137,22 @@ app.use(
 )
 app.use(express.json({ limit: "50kb" }))
 
+// express.json leaves req.body undefined when no body (or no Content-Type)
+// arrived; a route reading req.body.x then throws a TypeError that the error
+// handler reports as a 500 for what is a 400. Normalize once, here.
+app.use((req: Request, _res: Response, next: NextFunction) => {
+  req.body ??= {}
+  next()
+})
+
 app.get("/healthz", async (_req: Request, res: Response) => {
   try {
     await pool.query("SELECT 1")
-    res.json({ status: "OK", fqdn: process.env.SERVER_FQDN || null })
+    res.json({
+      status: "OK",
+      fqdn: process.env.SERVER_FQDN || null,
+      localOnlyFeatures,
+    })
   } catch {
     res.status(503).json({ status: "DOWN" })
   }
@@ -215,6 +227,9 @@ function shutdown(exitCode: number) {
   stopStaleSessionCleanup()
   if (mdnsService) mdnsService.stop()
   bonjour?.destroy()
+  // Backstop: a connection that refuses to end must not hold the process
+  // hostage after a signal.
+  setTimeout(() => process.exit(exitCode), 5000).unref()
   server.close(async () => {
     try {
       await pool.end()

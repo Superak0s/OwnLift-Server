@@ -18,7 +18,7 @@ router.use(authenticateToken)
 router.post("/", photoUpload.single("photo"), async (req: Request, res: Response) => {
   assertImageUpload(req.file)
 
-  const { takenAt, notes, angle, customSideName } = req.body
+  const { takenAt, note, angle, customSideName } = req.body
   let muscleGroups: string[] = []
   if (req.body.muscleGroups) {
     try {
@@ -36,7 +36,7 @@ router.post("/", photoUpload.single("photo"), async (req: Request, res: Response
     req.file.buffer,
     req.file.mimetype,
     muscleGroups,
-    notes || null,
+    note || null,
     angle || "custom",
     customSideName || null,
     takenAt || null,

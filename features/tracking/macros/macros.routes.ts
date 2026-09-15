@@ -8,7 +8,6 @@ import {
 import {
   logMacrosIntake,
   getMacrosHistory,
-  setMacrosGoals,
   deleteMacrosEntry,
 } from "./macros.model.js"
 
@@ -33,15 +32,12 @@ router.post("/log", async (req: Request, res: Response) => {
     fat,
     calories,
     errorMargin = 0,
-    time,
     takenAt,
     note,
   } = req.body
   const userId = req.user!.id
 
-  if (!time || !takenAt) {
-    throw new ValidationError("time and takenAt are required")
-  }
+  if (!takenAt) throw new ValidationError("takenAt is required")
 
   const hasAtLeastOne =
     protein != null ||
@@ -69,7 +65,6 @@ router.post("/log", async (req: Request, res: Response) => {
     parsedFat,
     parsedCalories,
     parsedMargin,
-    time,
     takenAt,
     note,
   )
@@ -86,27 +81,8 @@ router.get("/log", async (req: Request, res: Response) => {
   res.json({ success: true, entries })
 })
 
-router.put("/goals", async (req: Request, res: Response) => {
-  const { protein, carbs, fat, calories } = req.body
-
-  if (protein == null && carbs == null && fat == null && calories == null) {
-    throw new ValidationError("Provide at least one goal to update")
-  }
-
-  const parsedProtein = safeMacro(protein, "protein")
-  const parsedCarbs = safeMacro(carbs, "carbs")
-  const parsedFat = safeMacro(fat, "fat")
-  const parsedCalories = safeMacro(calories, "calories")
-
-  await setMacrosGoals(req.user!.id, {
-    protein: parsedProtein ?? undefined,
-    carbs: parsedCarbs ?? undefined,
-    fat: parsedFat ?? undefined,
-    calories: parsedCalories ?? undefined,
-  })
-
-  res.json({ success: true, goals: { protein, carbs, fat, calories } })
-})
+// Macro goals live in /api/settings with every other preference — there is no
+// PUT /goals here any more.
 
 router.delete("/log/:id", async (req: Request, res: Response) => {
   const entryId = parseIntParam(String(req.params.id), "macro entry ID")

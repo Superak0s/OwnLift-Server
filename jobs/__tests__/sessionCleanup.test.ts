@@ -8,7 +8,7 @@ import {
   runStaleSessionCleanup,
 } from "../sessionCleanup.js"
 
-// Only sessions idle for 30+ minutes are touched, so the fresh sessions other
+// Only workouts idle for 30+ minutes are touched, so the fresh workouts other
 // test files create are safe from this job running against the shared scratch DB.
 describe("sessionCleanup", () => {
   let staleId: number
@@ -22,7 +22,7 @@ describe("sessionCleanup", () => {
       "Passw0rd-123",
     )
     const [res] = await pool.execute(
-      `INSERT INTO sessions (user_id, day_number, day_title, start_time)
+      `INSERT INTO workouts (user_id, day_number, day_title, start_time)
        VALUES (?, 1, 'Cleanup day', NOW() - INTERVAL ? MINUTE)`,
       [userId, startsMinutesAgo],
     )
@@ -36,17 +36,17 @@ describe("sessionCleanup", () => {
 
   afterAll(async () => {
     stopStaleSessionCleanup()
-    await pool.execute("DELETE FROM sessions WHERE id IN (?, ?)", [
+    await pool.execute("DELETE FROM workouts WHERE id IN (?, ?)", [
       staleId,
       freshId,
     ])
   })
 
-  it("ends sessions idle for 30+ minutes and leaves fresh ones alone", async () => {
+  it("ends workouts idle for 30+ minutes and leaves fresh ones alone", async () => {
     startStaleSessionCleanup() // runs once immediately, then every 5 min
     startStaleSessionCleanup() // idempotent — no second interval
 
-    // The rest of the suite writes to `sessions` concurrently against the
+    // The rest of the suite writes to `workouts` concurrently against the
     // shared scratch DB, and a sweep that collides with one of those writes
     // fails and waits 5 minutes for its next tick. Drive the sweep directly
     // and retry, rather than racing the scheduler's single immediate run.
@@ -54,7 +54,7 @@ describe("sessionCleanup", () => {
     for (let attempt = 0; attempt < 10; attempt++) {
       await runStaleSessionCleanup()
       const [rows] = await pool.query(
-        "SELECT end_time, total_duration FROM sessions WHERE id = ?",
+        "SELECT end_time, total_duration FROM workouts WHERE id = ?",
         [staleId],
       )
       stale = (rows as typeof stale[])[0]
@@ -66,7 +66,7 @@ describe("sessionCleanup", () => {
     expect(stale!.total_duration).toBe(0)
 
     const [fresh] = await pool.query(
-      "SELECT end_time FROM sessions WHERE id = ?",
+      "SELECT end_time FROM workouts WHERE id = ?",
       [freshId],
     )
     expect((fresh as { end_time: string | null }[])[0].end_time).toBeNull()

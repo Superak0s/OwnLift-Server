@@ -16,30 +16,35 @@ describe("hydration routes", () => {
     entryId = res.body.id
   })
 
-  it("lists entries and settings", async () => {
+  it("lists entries", async () => {
     const history = await request(app).get("/api/tracking/hydration").set(auth(u.token))
     expect(history.body.data.length).toBe(1)
-    expect(history.body.data[0].amountMl).toBe(500)
-
-    const settings = await request(app).get("/api/tracking/hydration/settings").set(auth(u.token))
-    expect(settings.status).toBe(200)
+    expect(history.body.data[0].value).toBe(500)
   })
 
-  it("updates settings with validation", async () => {
+  // The hydration goal lives in /api/settings with every other preference now.
+  it("updates hydration settings with validation", async () => {
     const bad = await request(app)
-      .post("/api/tracking/hydration/settings")
+      .patch("/api/settings")
       .set(auth(u.token))
-      .send({ goalMl: -5 })
+      .send({ hydrationGoalMl: -5 })
     expect(bad.status).toBe(400)
 
-    const ok = await request(app)
-      .post("/api/tracking/hydration/settings")
+    const zero = await request(app)
+      .patch("/api/settings")
       .set(auth(u.token))
-      .send({ goalMl: 2500, measurementErrorPercent: 5 })
-    expect(ok.status).toBe(200)
+      .send({ hydrationGoalMl: 0 })
+    expect(zero.status).toBe(400)
 
-    const read = await request(app).get("/api/tracking/hydration/settings").set(auth(u.token))
-    expect(read.body.data.goalMl).toBe(2500)
+    const ok = await request(app)
+      .patch("/api/settings")
+      .set(auth(u.token))
+      .send({ hydrationGoalMl: 2500, hydrationErrorPercent: 5 })
+    expect(ok.status).toBe(200)
+    expect(ok.body.data.hydrationGoalMl).toBe(2500)
+
+    const read = await request(app).get("/api/settings").set(auth(u.token))
+    expect(read.body.data.hydrationGoalMl).toBe(2500)
   })
 
   it("deletes entries, 404 on a missing one", async () => {

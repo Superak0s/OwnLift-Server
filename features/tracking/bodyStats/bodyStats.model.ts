@@ -1,61 +1,53 @@
-import { pool, formatDateForMySQL } from "@/config/database.js"
-import type { RowDataPacket, ResultSetHeader } from "mysql2"
-import type { WeightEntry, BodyFatEntry } from "../tracking.types.js"
-interface BodyFatRow extends RowDataPacket {
-  id: number
-  percentage: number
-  waist_cm: number
-  neck_cm: number
-  hip_cm: number | null
-  height_cm: number
-  gender: string
-  method: string
-  calculated_at: Date
-}
+// Weight and body-fat, both of them series in the shared `measurements` table.
+// This file is now only the US-Navy formula plus the mapping from metric rows to
+// the shapes the app expects; see features/tracking/measurements/measurements.model.ts
+// for the storage.
 
+import type { BodyFatEntry } from "../tracking.types.js"
+import { ValidationError } from "@/middleware/errorHandler.js"
+import {
+  METRICS,
+  logMetrics,
+  getMetricHistory,
+  getLatestMetric,
+  getMetricGroups,
+  deleteMetricEntry,
+  deleteMetricGroup,
+  type MetricEntry,
+} from "../measurements/measurements.model.js"
 
 export async function logWeight(
   userId: number,
   weightKg: number,
-  recordedAt?: string | null,
+  measuredAt?: string | null,
   note?: string | null,
 ): Promise<number> {
-  const ts = formatDateForMySQL(recordedAt ? recordedAt : new Date())
-  const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO body_weight (user_id, weight_kg, recorded_at, note) VALUES (?, ?, ?, ?)`,
-    [userId, weightKg, ts, note ?? null],
+  return logMetrics(
+    userId,
+    [{ metric: METRICS.weightKg, value: weightKg }],
+    measuredAt,
+    note,
   )
-  return result.insertId
 }
 
 export async function getWeightHistory(
   userId: number,
   limit = 90,
-): Promise<WeightEntry[]> {
-  const [rows] = await pool.execute<(WeightEntry & RowDataPacket)[]>(
-    `SELECT id, weight_kg AS weightKg, recorded_at AS recordedAt, note, created_at AS createdAt
-     FROM body_weight WHERE user_id = ? ORDER BY recorded_at DESC LIMIT ?`,
-    [userId, limit],
-  )
-  return rows
+): Promise<MetricEntry[]> {
+  return getMetricHistory(userId, METRICS.weightKg, limit)
 }
 
 export async function deleteWeightEntry(
   userId: number,
   entryId: number,
 ): Promise<boolean> {
-  const [result] = await pool.execute<ResultSetHeader>(`DELETE FROM body_weight WHERE id = ? AND user_id = ?`, [entryId, userId])
-  return result.affectedRows > 0
+  return deleteMetricEntry(userId, entryId, METRICS.weightKg)
 }
 
 export async function getCurrentWeight(
   userId: number,
-): Promise<Pick<WeightEntry, "weightKg" | "recordedAt"> | null> {
-  const [rows] = await pool.execute<(Pick<WeightEntry, "weightKg" | "recordedAt"> & RowDataPacket)[]>(
-    `SELECT weight_kg AS weightKg, recorded_at AS recordedAt FROM body_weight WHERE user_id = ? ORDER BY recorded_at DESC LIMIT 1`,
-    [userId],
-  )
-  return rows[0] ?? null
+): Promise<MetricEntry | null> {
+  return getLatestMetric(userId, METRICS.weightKg)
 }
 
 // ─── Body fat percentage (US Navy formula) ────────────────────────────────────
@@ -67,23 +59,32 @@ export function calculateBodyFatPercentage(
   neckCm: number,
   hipCm?: number | null,
 ): number {
-  if (!heightCm || heightCm <= 0) throw new Error("Invalid height measurement")
-  if (!waistCm || waistCm <= 0) throw new Error("Invalid waist measurement")
-  if (!neckCm || neckCm <= 0) throw new Error("Invalid neck measurement")
+  // ValidationError, not Error: these are client-supplied measurements, so a
+  // bad combination is a 400, not a 500 the cross-check route would leak.
+  if (!heightCm || heightCm <= 0)
+    throw new ValidationError("Invalid height measurement")
+  if (!waistCm || waistCm <= 0)
+    throw new ValidationError("Invalid waist measurement")
+  if (!neckCm || neckCm <= 0)
+    throw new ValidationError("Invalid neck measurement")
 
   let bf: number
   if (gender === "male") {
     const diff = waistCm - neckCm
-    if (diff <= 0) throw new Error("Waist must be greater than neck")
+    if (diff <= 0)
+      throw new ValidationError("Waist must be greater than neck")
     bf =
       495 /
         (1.0324 - 0.19077 * Math.log10(diff) + 0.15456 * Math.log10(heightCm)) -
       450
   } else {
     if (!hipCm || hipCm <= 0)
-      throw new Error("Hip measurement required for female calculation")
+      throw new ValidationError(
+        "Hip measurement required for female calculation",
+      )
     const sum = waistCm + hipCm - neckCm
-    if (sum <= 0) throw new Error("Waist + Hip must be greater than neck")
+    if (sum <= 0)
+      throw new ValidationError("Waist + Hip must be greater than neck")
     bf =
       495 /
         (1.29579 - 0.35004 * Math.log10(sum) + 0.221 * Math.log10(heightCm)) -
@@ -92,11 +93,23 @@ export function calculateBodyFatPercentage(
 
   const result = parseFloat(bf.toFixed(1))
   if (isNaN(result) || result < 0 || result > 100)
-    throw new Error(
+    throw new ValidationError(
       `Invalid body fat result: ${result}%. Check your measurements.`,
     )
   return result
 }
+
+// One body-fat log writes the percentage AND the circumferences it was derived
+// from, all under one measured_at. They used to be columns of a single row; as
+// metric rows they are also plain waist/neck/hip series the charts can use.
+const BODY_FAT_PIVOT = {
+  percentage: METRICS.bodyFatPct,
+  waist: METRICS.waistCm,
+  neck: METRICS.neckCm,
+  hip: METRICS.hipCm,
+} as const
+
+const BODY_FAT_METRICS = Object.values(BODY_FAT_PIVOT)
 
 export async function logBodyFat(
   userId: number,
@@ -104,66 +117,49 @@ export async function logBodyFat(
   waistCm: number,
   neckCm: number,
   hipCm: number | null,
-  heightCm: number | null,
-  gender: string,
-  calculatedAt: string | Date,
+  measuredAt: string | Date,
 ): Promise<BodyFatEntry> {
-  const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO body_fat_measurements (user_id, percentage, waist_cm, neck_cm, hip_cm, height_cm, gender, method, calculated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'us_navy', ?)`,
+  const id = await logMetrics(
+    userId,
     [
-      userId,
-      percentage,
-      waistCm,
-      neckCm,
-      hipCm,
-      heightCm,
-      gender,
-      formatDateForMySQL(calculatedAt),
+      { metric: METRICS.bodyFatPct, value: percentage },
+      { metric: METRICS.waistCm, value: waistCm },
+      { metric: METRICS.neckCm, value: neckCm },
+      ...(hipCm ? [{ metric: METRICS.hipCm, value: hipCm }] : []),
     ],
+    measuredAt,
   )
-  const [rows] = await pool.execute<BodyFatRow[]>(
-    "SELECT * FROM body_fat_measurements WHERE id = ?",
-    [result.insertId],
-  )
-  return formatEntry(rows[0])
+  return {
+    id,
+    percentage,
+    measurements: { waist: waistCm, neck: neckCm, hip: hipCm, unit: "cm" },
+    date: measuredAt,
+  }
 }
 
 export async function getBodyFatHistory(
   userId: number,
   limit = 90,
 ): Promise<BodyFatEntry[]> {
-  const [rows] = await pool.execute<BodyFatRow[]>(
-    `SELECT * FROM body_fat_measurements WHERE user_id = ? ORDER BY calculated_at DESC LIMIT ?`,
-    [userId, limit],
+  const rows = await getMetricGroups(
+    userId,
+    BODY_FAT_PIVOT,
+    limit,
+    METRICS.bodyFatPct,
   )
-  return rows.map(formatEntry)
+  return rows.map((r) => ({
+    id: r.id,
+    percentage: r.percentage,
+    measurements: { waist: r.waist, neck: r.neck, hip: r.hip, unit: "cm" },
+    date: r.measuredAt,
+  }))
 }
 
 export async function deleteBodyFatEntry(
   userId: number,
   entryId: number,
 ): Promise<boolean> {
-  const [result] = await pool.execute<ResultSetHeader>(
-    "DELETE FROM body_fat_measurements WHERE id = ? AND user_id = ?",
-    [entryId, userId],
-  )
-  return result.affectedRows > 0
-}
-
-function formatEntry(e: BodyFatRow): BodyFatEntry {
-  return {
-    id: e.id,
-    percentage: e.percentage,
-    measurements: {
-      waist: e.waist_cm,
-      neck: e.neck_cm,
-      hip: e.hip_cm,
-      height: e.height_cm,
-      unit: "cm",
-    },
-    date: e.calculated_at,
-    method: e.method,
-    gender: e.gender,
-  }
+  // Removes the whole measuring session, which is what one of these entries was
+  // before the merge.
+  return deleteMetricGroup(userId, entryId, BODY_FAT_METRICS)
 }

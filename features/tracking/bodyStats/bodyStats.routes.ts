@@ -4,7 +4,12 @@ import {
   ValidationError,
   NotFoundError,
 } from "@/middleware/errorHandler.js"
-import { validateWeightEntry, queryLimit, parseIntParam } from "@/middleware/validation.js"
+import {
+  validateWeightEntry,
+  queryLimit,
+  parseIntParam,
+  parseBackdatedTimestamp,
+} from "@/middleware/validation.js"
 import { logger } from "@/utils/logger.js"
 import {
   logWeight,
@@ -23,11 +28,11 @@ const router: Router = Router()
 router.use(authenticateToken)
 
 router.post("/weight", validateWeightEntry, async (req: Request, res: Response) => {
-  const { weightKg, recordedAt, note } = req.body
+  const { weightKg, measuredAt, note } = req.body
   const id = await logWeight(
     req.user!.id,
     weightKg,
-    recordedAt || null,
+    parseBackdatedTimestamp(measuredAt, "measuredAt"),
     note || null,
   )
   res.status(201).json({ success: true, id })
@@ -52,26 +57,32 @@ router.delete("/weight/:id", async (req: Request, res: Response) => {
 })
 
 router.post("/bodyfat/log", async (req: Request, res: Response) => {
-  const { percentage, measurements, calculatedAt, gender } = req.body
+  const { percentage, measurements, measuredAt, bfFormulaSex } = req.body
   const userId = req.user!.id
 
   if (percentage == null || measurements == null) {
     throw new ValidationError("percentage and measurements are required")
   }
 
-  // Validate percentage BEFORE any DB calls
-  if (typeof percentage !== "number" || percentage < 0 || percentage > 100) {
+  // Validate percentage BEFORE any DB calls. 0 is rejected too: ck_m_value
+  // only stores value > 0, so 0% would be a 500 on insert.
+  if (typeof percentage !== "number" || percentage <= 0 || percentage > 100) {
     throw new ValidationError(
-      `Invalid body fat percentage: ${percentage}%. Must be between 0-100%.`,
+      `Invalid body fat percentage: ${percentage}%. Must be between 1-100%.`,
     )
   }
 
+  // An override the client sends must name a real sex, otherwise it falls
+  // silently into the wrong formula branch.
+  if (bfFormulaSex != null && bfFormulaSex !== "male" && bfFormulaSex !== "female")
+    throw new ValidationError("bfFormulaSex must be 'male' or 'female'")
+
   const { waist, neck, hip, unit } = measurements
 
-  // The client only sends gender when it differs from the profile, so fall
-  // back to the stored one — the formula picks a different branch per sex.
+  // The client only sends bfFormulaSex when it differs from the stored one, so
+  // fall back to the profile — the formula picks a different branch per sex.
   const userData = await getUserBodyData(userId)
-  const sex: "male" | "female" = gender ?? userData.gender
+  const sex: "male" | "female" = bfFormulaSex ?? userData.bfFormulaSex
 
   if (!waist || waist <= 0)
     throw new ValidationError("Invalid waist measurement")
@@ -99,9 +110,10 @@ router.post("/bodyfat/log", async (req: Request, res: Response) => {
     )
   }
 
-  // Height is only used to re-derive the percentage as a cross-check and to
-  // stamp the entry — the client already did the maths with its own copy. A
-  // profile without a height skips the check instead of rejecting the log.
+  // Height is only used to re-derive the percentage as a cross-check — the
+  // client already did the maths with its own copy, and the height is no longer
+  // copied onto the entry (it is read live from the profile). A profile without
+  // a height skips the check instead of rejecting the log.
   if (userData.heightCm) {
     const calculatedPercentage = calculateBodyFatPercentage(
       sex,
@@ -125,9 +137,7 @@ router.post("/bodyfat/log", async (req: Request, res: Response) => {
     waistCm,
     neckCm,
     hipCm,
-    userData.heightCm,
-    userData.gender,
-    calculatedAt || new Date().toISOString(),
+    parseBackdatedTimestamp(measuredAt, "measuredAt") ?? new Date().toISOString(),
   )
 
   res.json({ success: true, entry })

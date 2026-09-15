@@ -8,7 +8,7 @@ import { asDuplicateUserError } from "./auth.model.js"
 const ALLOWED_FIELDS = [
   "name",
   "email",
-  "gender",
+  "bf_formula_sex",
   "height_cm",
   "height_unit",
   "weight_unit",
@@ -25,12 +25,22 @@ export async function updateUserProfile(
   for (const key of ALLOWED_FIELDS) {
     if (updates[key] === undefined) continue
 
-    // Validate height_cm wherever it arrives
+    // ck_users_height rejects anything outside 1-300 too; this only gets the
+    // user a readable message instead of a driver-level constraint error.
     if (key === "height_cm") {
       const h = Number(updates[key])
       if (!Number.isFinite(h) || h <= 0 || h > 300)
         throw new ValidationError("Height must be between 1-300 cm")
     }
+
+    // ENUM would catch this as a 500; a readable 400 is the point of the loop.
+    if (
+      key === "bf_formula_sex" &&
+      updates[key] !== null &&
+      updates[key] !== "male" &&
+      updates[key] !== "female"
+    )
+      throw new ValidationError("bf_formula_sex must be 'male' or 'female'")
 
     fields.push(`${key} = ?`)
     values.push(updates[key])
@@ -53,74 +63,92 @@ export async function updateUserProfile(
 
 export async function getUserBodyData(userId: number): Promise<UserBodyData> {
   const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT height_cm, gender, weight_unit FROM users WHERE id = ?`,
+    `SELECT height_cm, bf_formula_sex, weight_unit FROM users WHERE id = ?`,
     [userId],
   )
   if (!rows[0]) throw new NotFoundError("User")
   return {
-    heightCm: rows[0].height_cm ? parseFloat(String(rows[0].height_cm)) : null,
-    gender: rows[0].gender || "male",
+    // decimalNumbers on the pool: height_cm is already a number here.
+    heightCm: rows[0].height_cm ?? null,
+    bfFormulaSex: rows[0].bf_formula_sex || "male",
     weightUnit: rows[0].weight_unit || "kg",
   }
 }
 
 /**
- * Delete every piece of data owned by a user WITHOUT deleting the account
- * itself. Used by the "Clear All Data" action: the user stays logged in and
- * can start fresh, but all of their workout, tracking and social data is gone.
+ * Every table that references `users`, and the column(s) it does it through,
+ * read from the live schema instead of a hand-kept list.
  *
- * Runs in a single transaction so a mid-way failure leaves nothing partially
- * wiped. Child rows (set_timings, supplement_log) are
- * removed automatically via ON DELETE CASCADE when their parent row goes, so
- * they are not listed here.
+ * The hand-kept list was wrong: it named tables that no longer exist and had
+ * never gained `user_blocks` or `user_reports`, so "wipe all my data" quietly
+ * left those behind. A new table gets picked up here the moment it declares its
+ * foreign key, which is the only way this stays correct.
+ *
+ * `refresh_tokens` is excluded deliberately: those are auth state, not user
+ * data. Wiping them would log the caller out of the very request doing the
+ * wiping, and their hashes have no business in a data export.
  */
-// Every table keyed by a single user_id column. Shared by deleteAllUserData
-// and exportUserData so a table can never be exported but not erased, or
-// erased but missing from the export.
-const USER_OWNED_TABLES = [
-  "sessions",
-  "workout_programs",
-  "body_weight",
-  "body_fat_measurements",
-  "body_measurements",
-  "hydration_log",
-  "muscle_soreness",
-  "active_soreness",
-  "injuries",
-  "personal_muscle_notes",
-  "menstrual_cycle",
-  "menstrual_settings",
-  "hydration_settings",
-  // values before types: the FK cascade would take them anyway, but the
-  // export reads this same list and needs both.
-  "measurement_custom_values",
-  "measurement_custom_types",
-  "supplements", // cascades supplement_log
-  "progress_photos_muscle",
-  "macros_goals",
-  "macros_intake",
-  "joint_session_participants",
-] as const
+const EXCLUDED_TABLES = new Set(["refresh_tokens"])
 
-// Photo rows carry a LONGBLOB each; exporting the bytes would turn a JSON
-// export into hundreds of megabytes. The metadata goes out, the images don't.
+// user_blocks and user_reports point at users in BOTH directions (I block you
+// / you block me). Sweeping every FK column would delete and export the other
+// direction too — "Clear All Data" erasing the blocks and reports filed
+// AGAINST the caller. Only the column meaning "this user authored the row"
+// counts as owned data.
+const OUTBOUND_ONLY: Record<string, string> = {
+  user_blocks: "blocker_id",
+  user_reports: "reporter_id",
+}
+
+let ownedTables: Promise<Map<string, string[]>> | null = null
+
+function getUserOwnedTables(): Promise<Map<string, string[]>> {
+  ownedTables ??= (async () => {
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT TABLE_NAME AS tableName, COLUMN_NAME AS columnName
+       FROM information_schema.KEY_COLUMN_USAGE
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND REFERENCED_TABLE_NAME = 'users'
+         AND REFERENCED_COLUMN_NAME = 'id'
+       ORDER BY TABLE_NAME, COLUMN_NAME`,
+    )
+    const map = new Map<string, string[]>()
+    for (const r of rows) {
+      const table = String(r.tableName)
+      if (EXCLUDED_TABLES.has(table)) continue
+      const outbound = OUTBOUND_ONLY[table]
+      if (outbound) {
+        map.set(table, [outbound])
+        continue
+      }
+      map.set(table, [...(map.get(table) ?? []), String(r.columnName)])
+    }
+    return map
+  })()
+  return ownedTables
+}
+
+/** `user_id = ? OR friend_id = ?` — every way this table can point at a user. */
+function ownershipClause(columns: string[]): string {
+  return columns.map((c) => `${c} = ?`).join(" OR ")
+}
+
 /**
  * Per-table ceiling on the export. Nothing should legitimately reach it —
- * hydration, the fastest-growing table here, runs ~2,500 rows/year — but this
- * endpoint builds every row of twenty tables into one object, stringifies it,
- * then gzips that, with all three live in heap at once. Uncapped it is the
- * single request most likely to OOM a small box.
+ * `measurements`, the fastest-growing table here, runs a few thousand rows a
+ * year — but this endpoint builds every row of every table into one object,
+ * stringifies it, then gzips that, with all three live in heap at once.
+ * Uncapped it is the single request most likely to OOM a small box.
  */
 const EXPORT_ROW_CAP = 50_000
-
-const EXPORT_COLUMNS: Record<string, string> = {
-  progress_photos_muscle:
-    "id, mime_type, file_size, taken_at, notes, angle, custom_side_name, created_at",
-}
 
 /**
  * Everything this server holds about a user, as plain JSON — the read-side
  * counterpart to deleteAllUserData, for data-portability requests.
+ *
+ * Photo bytes are not in it and need no special case: they live in
+ * `progress_photo_blobs`, which is keyed by photo, not by user, so only the
+ * metadata row is reachable from here.
  */
 export async function exportUserData(
   userId: number,
@@ -128,62 +156,47 @@ export async function exportUserData(
   const data: Record<string, unknown> = {}
 
   const [profile] = await pool.execute<RowDataPacket[]>(
-    `SELECT id, username, email, name, gender, height_cm, height_unit, weight_unit, is_admin, created_at FROM users WHERE id = ?`,
+    `SELECT id, username, email, name, bf_formula_sex, height_cm, height_unit,
+            weight_unit, is_admin, created_at
+     FROM users WHERE id = ?`,
     [userId],
   )
   data.profile = profile[0] ?? null
 
-  for (const table of USER_OWNED_TABLES) {
-    const columns = EXPORT_COLUMNS[table] ?? "*"
+  for (const [table, columns] of await getUserOwnedTables()) {
     const [rows] = await pool.execute<RowDataPacket[]>(
-      `SELECT ${columns} FROM ${table} WHERE user_id = ? LIMIT ${EXPORT_ROW_CAP}`,
-      [userId],
+      `SELECT * FROM ${table} WHERE ${ownershipClause(columns)} LIMIT ${EXPORT_ROW_CAP}`,
+      columns.map(() => userId),
     )
     data[table] = rows
   }
 
-  const [friendships] = await pool.execute<RowDataPacket[]>(
-    `SELECT id, user_id, friend_id, status, created_at, accepted_at FROM friendships WHERE user_id = ? OR friend_id = ?`,
-    [userId, userId],
-  )
-  data.friendships = friendships
-
-  const [sharing] = await pool.execute<RowDataPacket[]>(
-    `SELECT id, from_user_id, to_user_id, permission_type, created_at FROM sharing_permissions WHERE from_user_id = ? OR to_user_id = ?`,
-    [userId, userId],
-  )
-  data.sharing_permissions = sharing
-
-  return {
-    exportedAt: new Date().toISOString(),
-    ...data,
-  }
+  return { exportedAt: new Date().toISOString(), ...data }
 }
 
+/**
+ * Delete every piece of data owned by a user WITHOUT deleting the account
+ * itself. Used by the "Clear All Data" action: the user stays logged in and can
+ * start fresh, but all of their workout, tracking and social data is gone.
+ *
+ * Runs in a single transaction so a mid-way failure leaves nothing partially
+ * wiped. Child rows reached only through a parent (workout_sets,
+ * supplement_intake, progress_photo_blobs) go with their parent via
+ * ON DELETE CASCADE, which is why they have no user column and never appear
+ * in the list above.
+ */
 export async function deleteAllUserData(userId: number): Promise<void> {
+  const tables = await getUserOwnedTables()
   const connection: PoolConnection = await pool.getConnection()
   try {
     await connection.beginTransaction()
 
-    for (const table of USER_OWNED_TABLES) {
-      await connection.execute(`DELETE FROM ${table} WHERE user_id = ?`, [
-        userId,
-      ])
+    for (const [table, columns] of tables) {
+      await connection.execute(
+        `DELETE FROM ${table} WHERE ${ownershipClause(columns)}`,
+        columns.map(() => userId),
+      )
     }
-
-    // Tables where the user can appear on either side of the relationship.
-    await connection.execute(
-      `DELETE FROM friendships WHERE user_id = ? OR friend_id = ?`,
-      [userId, userId],
-    )
-    await connection.execute(
-      `DELETE FROM sharing_permissions WHERE from_user_id = ? OR to_user_id = ?`,
-      [userId, userId],
-    )
-    await connection.execute(
-      `DELETE FROM joint_session_invites WHERE from_user_id = ? OR to_user_id = ?`,
-      [userId, userId],
-    )
 
     await connection.commit()
   } catch (err) {
@@ -193,4 +206,3 @@ export async function deleteAllUserData(userId: number): Promise<void> {
     connection.release()
   }
 }
-

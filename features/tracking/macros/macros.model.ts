@@ -1,16 +1,14 @@
 import { pool, formatDateForMySQL } from "@/config/database.js"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
-import type { MacrosEntry, MacrosGoals } from "../tracking.types.js"
-// Aliased to camelCase in SQL, so the query result is already the wire shape.
-// `+ 0` forces the DECIMAL columns to come back as numbers rather than the
-// strings mysql2 hands over for DECIMAL.
+import type { MacrosEntry } from "../tracking.types.js"
+
 type MacrosIntakeRow = MacrosEntry & RowDataPacket
 
-const MACROS_COLS = `id, name, protein + 0 AS protein, carbs + 0 AS carbs,
-       fat + 0 AS fat, calories + 0 AS calories,
-       COALESCE(error_margin, 0) + 0 AS errorMargin,
-       time, DATE(taken_at) AS date, taken_at AS takenAt, note`
-
+// Aliased to camelCase in SQL, so the query result is already the wire shape.
+// The `+ 0` casts these columns used to carry are gone: the pool sets
+// `decimalNumbers: true`, so DECIMAL already arrives as a number.
+const MACROS_COLS = `id, name, protein, carbs, fat, calories,
+       error_margin AS errorMargin, taken_at AS takenAt, note`
 
 export async function logMacrosIntake(
   userId: number,
@@ -20,23 +18,23 @@ export async function logMacrosIntake(
   fat: number | null,
   calories: number | null,
   errorMargin: number,
-  time: string,
   takenAt: string,
   note?: string | null,
 ): Promise<MacrosIntakeRow> {
   const ts = formatDateForMySQL(takenAt)
   const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO macros_intake (user_id, name, protein, carbs, fat, calories, error_margin, time, taken_at, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO macros_intake (user_id, name, protein, carbs, fat, calories, error_margin, taken_at, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       userId,
       name ?? null,
-      protein ?? null,
-      carbs ?? null,
-      fat ?? null,
-      calories ?? null,
+      // The columns are NOT NULL DEFAULT 0; an unlogged macro is zero of it,
+      // which is what every reader of this table already assumed.
+      protein ?? 0,
+      carbs ?? 0,
+      fat ?? 0,
+      calories ?? 0,
       errorMargin ?? 0,
-      time,
       ts,
       note ?? null,
     ],
@@ -62,32 +60,6 @@ export async function getMacrosHistory(
     [userId, days],
   )
   return rows
-}
-
-export async function setMacrosGoals(
-  userId: number,
-  goals: Partial<MacrosGoals>,
-): Promise<Partial<MacrosGoals>> {
-  // Atomic upsert — replaces the old SELECT + conditional INSERT/UPDATE pattern
-  // which had a race condition when two requests fired simultaneously.
-  await pool.execute(
-    `INSERT INTO macros_goals (user_id, protein_goal, carbs_goal, fat_goal, calories_goal)
-     VALUES (?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       protein_goal  = COALESCE(VALUES(protein_goal),  protein_goal),
-       carbs_goal    = COALESCE(VALUES(carbs_goal),    carbs_goal),
-       fat_goal      = COALESCE(VALUES(fat_goal),      fat_goal),
-       calories_goal = COALESCE(VALUES(calories_goal), calories_goal),
-       updated_at    = NOW()`,
-    [
-      userId,
-      goals.protein ?? null,
-      goals.carbs ?? null,
-      goals.fat ?? null,
-      goals.calories ?? null,
-    ],
-  )
-  return goals
 }
 
 export async function deleteMacrosEntry(

@@ -61,7 +61,7 @@ router.get("/requests/sent", async (req: Request, res: Response) => {
 router.post("/request", async (req: Request, res: Response) => {
   const { username } = req.body
 
-  if (!username) {
+  if (typeof username !== "string" || !username) {
     throw new ValidationError("Username is required")
   }
 

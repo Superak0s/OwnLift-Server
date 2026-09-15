@@ -22,6 +22,9 @@ import {
   getTokenVersion,
   deleteUserAccount,
   changePassword,
+  issueRefreshToken,
+  rotateRefreshToken,
+  revokeRefreshTokens,
 } from "./auth.model.js"
 import {
   updateUserProfile,
@@ -43,6 +46,7 @@ router.post("/signup", validateRegistration, async (req: Request, res: Response)
     success: true,
     message: "Account created successfully",
     token,
+    refreshToken: await issueRefreshToken(userId),
     user: {
       id: user.id,
       username: user.username,
@@ -74,6 +78,7 @@ router.post("/signin", validateLogin, async (req: Request, res: Response) => {
     success: true,
     message: "Signed in successfully",
     token,
+    refreshToken: await issueRefreshToken(user.id),
     user: {
       id: user.id,
       username: user.username,
@@ -90,7 +95,7 @@ router.get("/me", authenticateToken, async (req: Request, res: Response) => {
 })
 
 router.put("/profile", authenticateToken, validateProfileUpdate, async (req: Request, res: Response) => {
-  const { name, email, heightCm } = req.body
+  const { name, email, heightCm, bfFormulaSex } = req.body
   const updates: Record<string, string | number> = {}
 
   if (name !== undefined) updates.name = name
@@ -98,8 +103,16 @@ router.put("/profile", authenticateToken, validateProfileUpdate, async (req: Req
   if (email !== undefined) updates.email = email
 
   // The app keeps height on-device; this is the only way it reaches the
-  // server, where the body-fat entry records the height it was measured at.
+  // server, which needs it to re-check a body-fat percentage.
   if (heightCm !== undefined) updates.height_cm = Number(heightCm)
+
+  // Which branch of the US-Navy formula to use, stored once instead of being
+  // resent with every body-fat log. The column had no writer at all before.
+  if (bfFormulaSex !== undefined) {
+    if (bfFormulaSex !== "male" && bfFormulaSex !== "female")
+      throw new ValidationError('bfFormulaSex must be "male" or "female"')
+    updates.bf_formula_sex = bfFormulaSex
+  }
 
   if (Object.keys(updates).length === 0) {
     return res.json({
@@ -152,20 +165,61 @@ router.delete("/account", authenticateToken, validateRequired(["password"]), asy
 /**
  * POST /api/auth/refresh
  *
- * Reissues a fresh JWT for the currently authenticated user. Requires the
- * existing token to still be valid (authenticateToken rejects expired
- * tokens), so this only extends a live session proactively — it does not
- * revive one that has already expired. If you need to refresh sessions
- * *after* expiry, you'd need a separate, longer-lived refresh token stored
- * server-side (e.g. in a `refresh_tokens` table), since a single JWT can't
- * authenticate itself once it's expired.
+ * Spends the opaque refresh token in the body and returns a fresh access
+ * token plus its replacement. Deliberately unauthenticated: an expired access
+ * token is the normal reason to be here, and one that is still valid buys the
+ * caller nothing, so it is never read.
+ *
+ * Rotation is mandatory - the presented token is dead the moment this
+ * succeeds. Presenting it again is a replay, which kills the whole family
+ * (see rotateRefreshToken) and answers with code REFRESH_REUSED.
  */
-router.post("/refresh", authenticateToken, async (req: Request, res: Response) => {
-  const token = generateToken(
-    req.user!.id,
-    await getTokenVersion(req.user!.id),
-  )
-  res.json({ success: true, token })
+router.post("/refresh", async (req: Request, res: Response) => {
+  const presented = req.body?.refreshToken
+
+  if (typeof presented !== "string" || !presented) {
+    // Legacy path: the access token refreshing itself, for app builds that
+    // predate refresh tokens. Delete once none of those are in the wild.
+    await new Promise<void>((resolve, reject) =>
+      authenticateToken(req, res, (err) => (err ? reject(err) : resolve())),
+    )
+    return res.json({
+      success: true,
+      token: generateToken(req.user!.id, await getTokenVersion(req.user!.id)),
+    })
+  }
+
+  const result = await rotateRefreshToken(presented)
+  if (!result.ok) {
+    throw new UnauthorizedError(
+      "Invalid refresh token",
+      result.reused ? "REFRESH_REUSED" : undefined,
+    )
+  }
+
+  res.json({
+    success: true,
+    token: generateToken(result.userId, await getTokenVersion(result.userId)),
+    refreshToken: result.token,
+  })
+})
+
+/**
+ * POST /api/auth/signout
+ *
+ * Revokes the presented refresh token, or every one the user holds when
+ * `allDevices` is true. An unknown or already-revoked token still answers 204:
+ * sign-out must not report whether it existed, and the client could not act on
+ * the difference anyway. The access token is not revoked - it expires on its
+ * own.
+ */
+router.post("/signout", authenticateToken, async (req: Request, res: Response) => {
+  const { refreshToken, allDevices } = req.body ?? {}
+  await revokeRefreshTokens(req.user!.id, {
+    token: typeof refreshToken === "string" ? refreshToken : undefined,
+    allDevices: allDevices === true,
+  })
+  res.status(204).end()
 })
 
 /**
@@ -191,6 +245,7 @@ router.put("/password", authenticateToken, validatePasswordChange, async (req: R
     success: true,
     message: "Password changed successfully",
     token: generateToken(req.user!.id, await getTokenVersion(req.user!.id)),
+    refreshToken: await issueRefreshToken(req.user!.id),
   })
 })
 
@@ -198,7 +253,7 @@ router.put("/password", authenticateToken, validatePasswordChange, async (req: R
  * GET /api/auth/account/export
  *
  * Everything this server holds about the caller, as JSON. Progress photo
- * bytes are omitted (metadata only) — see exportUserData.
+ * bytes are not included: they live in their own table, keyed by photo.
  */
 router.get("/account/export", authenticateToken, async (req: Request, res: Response) => {
   res.json({ success: true, data: await exportUserData(req.user!.id) })

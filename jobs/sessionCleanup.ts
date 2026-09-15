@@ -10,7 +10,6 @@
 // quiet for too long.
 
 import { endStaleSessions } from "../features/workouts/workouts.model.js"
-import { deleteOrphanedJointSessions } from "../features/social/sharing/sharing.model.js"
 import { logger } from "../utils/logger.js"
 
 // Keep this in sync with INACTIVITY_THRESHOLD_MS on the client
@@ -29,7 +28,7 @@ let cleanupTimer: ReturnType<typeof setInterval> | null = null
 //
 // Exported so the test can drive a sweep directly. The scheduler runs this
 // once on start and then only every 5 minutes, and against a DB with
-// concurrent writers a single sweep can lose a race on `sessions` ("Record
+// concurrent writers a single sweep can lose a race on `workouts` ("Record
 // has changed since last read"), log it, and legitimately do nothing until
 // the next tick — which is fine in production and makes any test that polls
 // for a fixed window after start racy by construction.
@@ -37,13 +36,6 @@ export async function runStaleSessionCleanup(): Promise<void> {
   try {
     const ended = await endStaleSessions(INACTIVITY_THRESHOLD_MINUTES)
     if (ended > 0) logger.info(`[SESSION_CLEANUP] Auto-ended ${ended} session(s)`)
-
-    // Piggybacks on this job rather than earning its own timer: joint_sessions
-    // has no user_id and no FK, so a deleted user's participant rows cascade
-    // away and leave the parent row orphaned. Also idempotent.
-    const orphans = await deleteOrphanedJointSessions()
-    if (orphans > 0)
-      logger.info(`[SESSION_CLEANUP] Pruned ${orphans} orphaned joint session(s)`)
   } catch (err) {
     logger.error(
       "[SESSION_CLEANUP] Cleanup run failed:",

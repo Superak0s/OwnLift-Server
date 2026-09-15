@@ -88,12 +88,82 @@ describe("auth routes", () => {
     expect(bad.status).toBe(400)
   })
 
-  it("POST /refresh issues a working token", async () => {
+  it("POST /refresh issues a working token (legacy bearer path)", async () => {
     const res = await request(app).post("/api/auth/refresh").set(auth(u.token))
     expect(res.status).toBe(200)
     const me = await request(app).get("/api/auth/me").set(auth(res.body.token))
     expect(me.status).toBe(200)
     expect(me.body.user.username).toBe(u.username)
+  })
+
+  it("rotates the refresh token, and a replay kills the whole family", async () => {
+    const signin = await request(app)
+      .post("/api/auth/signin")
+      .send({ username: u.username, password: u.password })
+    const first = signin.body.refreshToken
+    expect(typeof first).toBe("string")
+
+    const rotated = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: first })
+    expect(rotated.status).toBe(200)
+    expect(rotated.body.refreshToken).toBeTruthy()
+    expect(rotated.body.refreshToken).not.toBe(first)
+
+    const me = await request(app)
+      .get("/api/auth/me")
+      .set(auth(rotated.body.token))
+    expect(me.status).toBe(200)
+
+    // Replaying the spent token is the leak signal: 401 + REFRESH_REUSED, and
+    // the replacement dies with it.
+    const replay = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: first })
+    expect(replay.status).toBe(401)
+    expect(replay.body.code).toBe("REFRESH_REUSED")
+
+    const dead = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: rotated.body.refreshToken })
+    expect(dead.status).toBe(401)
+    expect(dead.body.code).toBeUndefined()
+  })
+
+  it("rejects an unknown refresh token without a reuse code", async () => {
+    const res = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: "nope" })
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBeUndefined()
+  })
+
+  it("POST /signout revokes the token and stays 204 for unknown ones", async () => {
+    const signin = await request(app)
+      .post("/api/auth/signin")
+      .send({ username: u.username, password: u.password })
+    const { token, refreshToken } = signin.body
+
+    const out = await request(app)
+      .post("/api/auth/signout")
+      .set(auth(token))
+      .send({ refreshToken })
+    expect(out.status).toBe(204)
+
+    const after = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken })
+    expect(after.status).toBe(401)
+
+    const unknown = await request(app)
+      .post("/api/auth/signout")
+      .set(auth(token))
+      .send({ refreshToken: "never-existed" })
+    expect(unknown.status).toBe(204)
+
+    expect(
+      (await request(app).post("/api/auth/signout").send({ refreshToken })).status,
+    ).toBe(401)
   })
 
   it("PUT /password verifies the current one, revokes old tokens", async () => {
@@ -164,47 +234,37 @@ describe("auth routes", () => {
     expect(stillIn.status).toBe(200)
   })
 
-  it("exports and wipes the settings and custom-measurement tables too", async () => {
+  // getUserOwnedTables() discovers every table with a user column, so the two
+  // tables that replaced hydration_settings/menstrual_settings/macros_goals and
+  // the custom-measurement pair have to show up without anyone listing them.
+  it("exports and wipes the settings and measurement tables too", async () => {
     const v = await signup("wipeall")
 
     expect(
-      (await request(app).post("/api/tracking/hydration/settings").set(auth(v.token)).send({ goalMl: 3000 })).status,
+      (await request(app).patch("/api/settings").set(auth(v.token)).send({
+        hydrationGoalMl: 3000, cyclePeriodDays: 6, cycleLengthDays: 30,
+      })).status,
     ).toBe(200)
-    expect(
-      (await request(app).post("/api/tracking/menstrual/settings").set(auth(v.token)).send({ periodDays: 6, cycleLengthDays: 30 })).status,
-    ).toBe(200)
-    const type = await request(app)
-      .post("/api/tracking/custom-measurements/types")
+    const def = await request(app)
+      .post("/api/tracking/measurements/definitions")
       .set(auth(v.token))
-      .send({ keyName: "forearm", label: "Forearm", unit: "cm" })
-    expect(type.status).toBe(201)
+      .send({ keyName: "forearm_cm", label: "Forearm", unit: "cm" })
+    expect(def.status).toBe(201)
     expect(
-      (await request(app).post("/api/tracking/custom-measurements/values").set(auth(v.token)).send({ typeId: type.body.data.id, value: 31.5 })).status,
+      (await request(app).post("/api/tracking/measurements").set(auth(v.token)).send({ values: { forearm_cm: 31.5 } })).status,
     ).toBe(201)
 
+    const tables = ["user_settings", "metric_definitions", "measurements"]
+
     const exported = await request(app).get("/api/auth/account/export").set(auth(v.token))
-    for (const table of [
-      "menstrual_settings",
-      "hydration_settings",
-      "measurement_custom_types",
-      "measurement_custom_values",
-    ]) {
-      expect(exported.body.data[table]).toHaveLength(1)
-    }
+    for (const table of tables) expect(exported.body.data[table]).toHaveLength(1)
 
     expect(
       (await request(app).delete("/api/auth/account/data").set(auth(v.token)).send({ confirmDelete: "DELETE_ALL_DATA" })).status,
     ).toBe(200)
 
     const after = await request(app).get("/api/auth/account/export").set(auth(v.token))
-    for (const table of [
-      "menstrual_settings",
-      "hydration_settings",
-      "measurement_custom_types",
-      "measurement_custom_values",
-    ]) {
-      expect(after.body.data[table]).toHaveLength(0)
-    }
+    for (const table of tables) expect(after.body.data[table]).toHaveLength(0)
   })
 
   it("PUT /profile stores height, which the export reads back", async () => {

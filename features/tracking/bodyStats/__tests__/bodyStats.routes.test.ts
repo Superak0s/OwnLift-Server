@@ -9,7 +9,7 @@ describe("bodyStats routes", () => {
   beforeAll(async () => {
     u = await signup("bstat")
     // bodyfat needs a height the /profile route can't set
-    await pool.execute("UPDATE users SET height_cm = 180, gender = 'male' WHERE id = ?", [
+    await pool.execute("UPDATE users SET height_cm = 180, bf_formula_sex = 'male' WHERE id = ?", [
       u.user.id,
     ])
   })
@@ -27,7 +27,7 @@ describe("bodyStats routes", () => {
 
     const current = await request(app).get("/api/tracking/bodystats/weight/current").set(auth(u.token))
     expect(current.body.entry).not.toBeNull()
-    expect(Number(current.body.entry.weightKg)).toBe(70.5)
+    expect(current.body.entry.value).toBe(70.5)
 
     const history = await request(app).get("/api/tracking/bodystats/weight?limit=5").set(auth(u.token))
     expect(history.body.entries.length).toBe(1)
@@ -61,7 +61,7 @@ describe("bodyStats routes", () => {
     const femaleNoHip = await request(app)
       .post("/api/tracking/bodystats/bodyfat/log")
       .set(auth(u.token))
-      .send({ percentage: 15, gender: "female", measurements: { waist: 80, neck: 38 } })
+      .send({ percentage: 15, bfFormulaSex: "female", measurements: { waist: 80, neck: 38 } })
     expect(femaleNoHip.status).toBe(400)
 
     const ok = await request(app)

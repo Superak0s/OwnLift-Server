@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs"
 import jwt from "jsonwebtoken"
-import { randomUUID } from "crypto"
+import { createHash, randomBytes, randomUUID } from "crypto"
 import type { SignOptions } from "jsonwebtoken"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
 import type { AuthUser } from "./user.types.js"
@@ -72,9 +72,15 @@ export function asDuplicateUserError(err: unknown): unknown {
 export async function findUserByCredentials(
   usernameOrEmail: string,
 ): Promise<(AuthUser & { password_hash?: string }) | null> {
+  // A username can equal someone's email (admins are made via the CLI, and
+  // old rows predate the @ ban), so both arms of the WHERE can match. Prefer
+  // the exact username and take one row — which row MySQL returned first used
+  // to decide, and that is not an identity rule.
   const [users] = await pool.execute<AuthUserRow[]>(
-    `SELECT id, username, email, password_hash, name, is_admin, created_at FROM users WHERE username = ? OR email = ?`,
-    [usernameOrEmail, usernameOrEmail],
+    `SELECT id, username, email, password_hash, name, is_admin, created_at
+     FROM users WHERE username = ? OR email = ?
+     ORDER BY (username = ?) DESC LIMIT 1`,
+    [usernameOrEmail, usernameOrEmail, usernameOrEmail],
   )
   return users[0] ? toAuthUser(users[0]) : null
 }
@@ -197,7 +203,115 @@ export async function changePassword(
     "UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?",
     [hash, userId],
   )
+  // Same reasoning for refresh tokens: leaving them alive would let a leaked
+  // one outlive the password it was meant to be revoked with.
+  await revokeRefreshTokens(userId, { allDevices: true })
   return true
+}
+
+// -----------------------------------------------------------------------------
+// Refresh tokens
+// -----------------------------------------------------------------------------
+
+const REFRESH_TTL_DAYS = 30
+
+/**
+ * The stored form of a refresh token. A plain digest is enough here - the
+ * token is 256 bits of CSPRNG output, not a guessable password, so there is
+ * nothing for bcrypt to slow down.
+ */
+const hashRefreshToken = (token: string): string =>
+  createHash("sha256").update(token).digest("hex")
+
+/**
+ * Mint a refresh token. Passing an existing `familyId` continues a rotation
+ * chain; omitting it starts a new one (i.e. a fresh sign-in).
+ */
+export async function issueRefreshToken(
+  userId: number,
+  familyId: string = randomUUID(),
+): Promise<string> {
+  const token = randomBytes(32).toString("base64url")
+  await pool.execute(
+    `INSERT INTO refresh_tokens (user_id, token_hash, family_id, issued_at, expires_at)
+     VALUES (?, ?, ?, NOW(), NOW() + INTERVAL ${REFRESH_TTL_DAYS} DAY)`,
+    [userId, hashRefreshToken(token), familyId],
+  )
+  // Rotation writes a row every 15 minutes per device; expired ones are dead
+  // weight. Sweeping here keeps the table bounded without a cron job.
+  await pool.execute("DELETE FROM refresh_tokens WHERE expires_at < NOW()")
+  return token
+}
+
+export type RotateResult =
+  | { ok: true; userId: number; token: string }
+  | { ok: false; reused: boolean }
+
+/**
+ * Spend a refresh token and issue its replacement.
+ *
+ * The UPDATE is the atomic gate: two simultaneous presentations of the same
+ * token cannot both claim it, so a replay is caught even under a race. A
+ * token that was already spent means a copy leaked - the legitimate client's
+ * or an attacker's, indistinguishable - so the entire family is revoked and
+ * everyone has to sign in again.
+ */
+export async function rotateRefreshToken(presented: string): Promise<RotateResult> {
+  const hash = hashRefreshToken(presented)
+
+  const [claim] = await pool.execute<ResultSetHeader>(
+    `UPDATE refresh_tokens SET used_at = NOW()
+     WHERE token_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()`,
+    [hash],
+  )
+
+  const [rows] = await pool.execute<
+    (RowDataPacket & { user_id: number; family_id: string; used: number })[]
+  >(
+    `SELECT user_id, family_id, used_at IS NOT NULL AS used
+     FROM refresh_tokens WHERE token_hash = ?`,
+    [hash],
+  )
+  const row = rows[0]
+  if (!row) return { ok: false, reused: false }
+
+  if (claim.affectedRows === 0) {
+    // Revoked or expired is an ordinary dead token; already-used is a replay.
+    if (!row.used) return { ok: false, reused: false }
+    await pool.execute(
+      "UPDATE refresh_tokens SET revoked_at = NOW() WHERE family_id = ? AND revoked_at IS NULL",
+      [row.family_id],
+    )
+    return { ok: false, reused: true }
+  }
+
+  return {
+    ok: true,
+    userId: row.user_id,
+    token: await issueRefreshToken(row.user_id, row.family_id),
+  }
+}
+
+/**
+ * Revoke one refresh token, or every one the user holds. Scoped by user_id so
+ * a caller can only ever kill their own sessions. An unknown token is a no-op:
+ * sign-out must not report whether it existed.
+ */
+export async function revokeRefreshTokens(
+  userId: number,
+  opts: { token?: string; allDevices?: boolean },
+): Promise<void> {
+  if (opts.allDevices) {
+    await pool.execute(
+      "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL",
+      [userId],
+    )
+  } else if (opts.token) {
+    await pool.execute(
+      "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ? AND token_hash = ? AND revoked_at IS NULL",
+      [userId, hashRefreshToken(opts.token)],
+    )
+  }
 }
 
 export async function setUserAdmin(userId: number, isAdmin: boolean): Promise<boolean> {

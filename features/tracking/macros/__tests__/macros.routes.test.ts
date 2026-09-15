@@ -17,13 +17,13 @@ describe("macros routes", () => {
     const noFood = await request(app)
       .post("/api/tracking/macros/log")
       .set(auth(u.token))
-      .send({ time: "12:30", takenAt: "2024-06-01T12:30:00Z" })
+      .send({ takenAt: "2024-06-01T12:30:00Z" })
     expect(noFood.status).toBe(400)
 
     const big = await request(app)
       .post("/api/tracking/macros/log")
       .set(auth(u.token))
-      .send({ name: "lunch", protein: 20000, time: "12:30", takenAt: "2024-06-01T12:30:00Z" })
+      .send({ name: "lunch", protein: 20000, takenAt: "2024-06-01T12:30:00Z" })
     expect(big.status).toBe(400)
 
     const ok = await request(app)
@@ -32,24 +32,30 @@ describe("macros routes", () => {
       .send({
         name: "lunch", protein: 40, carbs: 60, calories: 700,
         // the history query is a rolling window, so this has to be recent
-        time: "12:30", takenAt: new Date().toISOString(), note: "good",
+        takenAt: new Date().toISOString(), note: "good",
       })
     expect(ok.status).toBe(200)
     entryId = ok.body.entry.id
   })
 
+  // Macro goals are /api/settings keys now, not PUT /api/tracking/macros/goals.
   it("lists, updates goals, and deletes", async () => {
     const history = await request(app).get("/api/tracking/macros/log?days=7").set(auth(u.token))
     expect(history.body.entries.length).toBe(1)
 
-    const noGoals = await request(app).put("/api/tracking/macros/goals").set(auth(u.token)).send({})
-    expect(noGoals.status).toBe(400)
+    const bad = await request(app)
+      .patch("/api/settings")
+      .set(auth(u.token))
+      .send({ macroProteinGoal: -1 })
+    expect(bad.status).toBe(400)
 
     const goals = await request(app)
-      .put("/api/tracking/macros/goals")
+      .patch("/api/settings")
       .set(auth(u.token))
-      .send({ protein: 150, calories: 2800 })
+      .send({ macroProteinGoal: 150, macroCaloriesGoal: 2800 })
     expect(goals.status).toBe(200)
+    expect(goals.body.data.macroProteinGoal).toBe(150)
+    expect(goals.body.data.macroCaloriesGoal).toBe(2800)
 
     const del = await request(app).delete(`/api/tracking/macros/log/${entryId}`).set(auth(u.token))
     expect(del.status).toBe(200)

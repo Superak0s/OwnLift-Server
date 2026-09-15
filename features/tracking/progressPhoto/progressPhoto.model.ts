@@ -1,58 +1,61 @@
+// Progress photos: metadata in progress_photos, bytes in progress_photo_blobs.
+//
+// The split is the point. Every listing query used to read a table whose rows
+// carried a LONGBLOB, so InnoDB dragged pages of image data through the buffer
+// pool to return a date and an angle. The blob now lives in its own table and
+// is only touched by GET /:id/image.
+
 import { pool, formatDateForMySQL } from "@/config/database.js"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
 import { NotFoundError, ValidationError } from "@/middleware/errorHandler.js"
 
-const ALLOWED_MIME_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"] as const
+const ALLOWED_MIME_TYPES = [
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+] as const
 const MAX_PHOTO_SIZE = 10 * 1024 * 1024
 const ALLOWED_ANGLES = ["front", "back", "side", "custom"] as const
+const MAX_MUSCLE_NAME_LENGTH = 128
 
-interface ProgressPhotoMuscleMeta {
+interface ProgressPhotoMeta extends RowDataPacket {
   id: number
-  takenAt: Date
-  uri: string
-  muscleGroups: string[]
-  notes: string | null
+  takenAt: string
+  note: string | null
   angle: string
   customSideName: string | null
-  createdAt: Date
+  createdAt: string
+  /** JSON_ARRAYAGG, so the driver hands back a real array — or null for none. */
+  muscleGroups: string[] | null
 }
 
-interface PhotoMetaRow extends RowDataPacket {
-  id: number
-  taken_at: Date
-  notes: string | null
-  angle: string
-  custom_side_name: string | null
-  created_at: Date
-  muscle_groups: string | null
-}
+// The muscle groups come from a correlated subquery rather than a LEFT JOIN +
+// GROUP BY: no grouping over the metadata columns, and an untagged photo comes
+// back as NULL instead of a one-null array.
+const SELECT_PHOTOS = `
+  SELECT p.id, p.taken_at AS takenAt, p.note, p.angle,
+         p.custom_side_name AS customSideName, p.created_at AS createdAt,
+         (SELECT JSON_ARRAYAGG(m.muscle_group) FROM progress_photo_muscles m
+           WHERE m.photo_id = p.id) AS muscleGroups
+  FROM progress_photos p
+`
 
-function formatMeta(row: PhotoMetaRow): ProgressPhotoMuscleMeta {
+/** The `uri` the app hands to <Image>; not a stored column. */
+function withUri(row: ProgressPhotoMeta) {
   return {
-    id: row.id,
-    takenAt: row.taken_at,
+    ...row,
+    muscleGroups: row.muscleGroups ?? [],
     uri: `/api/tracking/photos/muscle/${row.id}/image`,
-    muscleGroups: row.muscle_groups ? row.muscle_groups.split(",") : [],
-    notes: row.notes,
-    angle: row.angle,
-    customSideName: row.custom_side_name,
-    createdAt: row.created_at,
   }
 }
-
-const SELECT_WITH_TAGS = `
-  SELECT p.id, p.taken_at, p.notes, p.angle, p.custom_side_name, p.created_at,
-         GROUP_CONCAT(t.muscle_group) AS muscle_groups
-  FROM progress_photos_muscle p
-  LEFT JOIN progress_photos_muscle_tags t ON t.photo_id = p.id
-`
 
 export async function uploadPhoto(
   userId: number,
   photoBuffer: Buffer,
   mimeType: string,
   muscleGroups: string[],
-  notes: string | null,
+  note: string | null,
   angle: string,
   customSideName: string | null,
   takenAt?: string | null,
@@ -60,41 +63,50 @@ export async function uploadPhoto(
   if (!Buffer.isBuffer(photoBuffer) || photoBuffer.length === 0)
     throw new ValidationError("Invalid photo data")
   if (photoBuffer.length > MAX_PHOTO_SIZE)
-    throw new ValidationError(`Photo size exceeds ${MAX_PHOTO_SIZE / (1024 * 1024)}MB limit`)
+    throw new ValidationError(
+      `Photo size exceeds ${MAX_PHOTO_SIZE / (1024 * 1024)}MB limit`,
+    )
   if (!(ALLOWED_MIME_TYPES as readonly string[]).includes(mimeType))
     throw new ValidationError("Invalid image type. Allowed: JPEG, PNG, WebP")
   if (!(ALLOWED_ANGLES as readonly string[]).includes(angle))
     throw new ValidationError("Invalid angle")
   if (muscleGroups.length > 20)
     throw new ValidationError("Too many muscle groups")
-  // GROUP_CONCAT-joined on read, so commas would corrupt the split
-  if (muscleGroups.some((m) => !m || m.length > 50 || m.includes(",")))
+  // A muscle group is a row now, not a piece of a comma-joined string, so a
+  // comma in the name is just a character.
+  if (muscleGroups.some((m) => typeof m !== "string" || !m || m.length > MAX_MUSCLE_NAME_LENGTH))
     throw new ValidationError("Invalid muscle group")
 
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
     const [result] = await connection.execute<ResultSetHeader>(
-      `INSERT INTO progress_photos_muscle (user_id, photo_data, mime_type, file_size, taken_at, notes, angle, custom_side_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO progress_photos
+         (user_id, mime_type, file_size, taken_at, note, angle, custom_side_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         userId,
-        photoBuffer,
         mimeType,
         photoBuffer.length,
         formatDateForMySQL(takenAt ? takenAt : new Date()),
-        notes ?? null,
+        note ?? null,
         angle,
         customSideName ?? null,
       ],
     )
     const photoId = result.insertId
 
-    for (const muscleGroup of muscleGroups) {
-      await connection.execute(
-        `INSERT INTO progress_photos_muscle_tags (photo_id, muscle_group) VALUES (?, ?)`,
-        [photoId, muscleGroup],
-      )
-    }
+    await connection.execute(
+      `INSERT INTO progress_photo_blobs (photo_id, data) VALUES (?, ?)`,
+      [photoId, photoBuffer],
+    )
+
+    const unique = [...new Set(muscleGroups)]
+    await connection.execute(
+      `INSERT INTO progress_photo_muscles (photo_id, muscle_group) VALUES
+       ${unique.map(() => "(?, ?)").join(", ")}`,
+      unique.flatMap((m) => [photoId, m]),
+    )
 
     await connection.commit()
     return photoId
@@ -106,31 +118,28 @@ export async function uploadPhoto(
   }
 }
 
-export async function getAllPhotos(
-  userId: number,
-  limit = 100,
-): Promise<ProgressPhotoMuscleMeta[]> {
-  const [rows] = await pool.execute<PhotoMetaRow[]>(
-    `${SELECT_WITH_TAGS} WHERE p.user_id = ? GROUP BY p.id ORDER BY p.taken_at DESC LIMIT ?`,
+export async function getAllPhotos(userId: number, limit = 100) {
+  const [rows] = await pool.execute<ProgressPhotoMeta[]>(
+    `${SELECT_PHOTOS} WHERE p.user_id = ? ORDER BY p.taken_at DESC LIMIT ?`,
     [userId, limit],
   )
-  return rows.map(formatMeta)
+  return rows.map(withUri)
 }
 
 export async function getPhotosByMuscle(
   userId: number,
   muscleGroup: string,
   limit = 100,
-): Promise<ProgressPhotoMuscleMeta[]> {
-  const [rows] = await pool.execute<PhotoMetaRow[]>(
-    `${SELECT_WITH_TAGS}
-     WHERE p.user_id = ? AND p.id IN (
-       SELECT photo_id FROM progress_photos_muscle_tags WHERE muscle_group = ?
-     )
-     GROUP BY p.id ORDER BY p.taken_at DESC LIMIT ?`,
+) {
+  const [rows] = await pool.execute<ProgressPhotoMeta[]>(
+    `${SELECT_PHOTOS}
+     WHERE p.user_id = ? AND EXISTS (
+       SELECT 1 FROM progress_photo_muscles m
+        WHERE m.photo_id = p.id AND m.muscle_group = ?)
+     ORDER BY p.taken_at DESC LIMIT ?`,
     [userId, muscleGroup, limit],
   )
-  return rows.map(formatMeta)
+  return rows.map(withUri)
 }
 
 export async function getPhotoImage(
@@ -138,19 +147,24 @@ export async function getPhotoImage(
   photoId: number,
 ): Promise<{ photoData: Buffer; mimeType: string }> {
   const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT photo_data, mime_type FROM progress_photos_muscle WHERE id = ? AND user_id = ?`,
+    `SELECT b.data AS photoData, p.mime_type AS mimeType
+     FROM progress_photos p JOIN progress_photo_blobs b ON b.photo_id = p.id
+     WHERE p.id = ? AND p.user_id = ?`,
     [photoId, userId],
   )
   if (!rows[0]) throw new NotFoundError("Photo")
-  return { photoData: rows[0].photo_data, mimeType: rows[0].mime_type }
+  return { photoData: rows[0].photoData, mimeType: rows[0].mimeType }
 }
 
-export async function deletePhoto(userId: number, photoId: number): Promise<boolean> {
+export async function deletePhoto(
+  userId: number,
+  photoId: number,
+): Promise<boolean> {
+  // The blob and the tags follow: both FKs are ON DELETE CASCADE.
   const [result] = await pool.execute<ResultSetHeader>(
-    `DELETE FROM progress_photos_muscle WHERE id = ? AND user_id = ?`,
+    `DELETE FROM progress_photos WHERE id = ? AND user_id = ?`,
     [photoId, userId],
   )
-  if (result.affectedRows === 0)
-    throw new NotFoundError("Photo")
+  if (result.affectedRows === 0) throw new NotFoundError("Photo")
   return true
 }

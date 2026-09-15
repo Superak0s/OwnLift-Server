@@ -77,41 +77,40 @@ beforeAll(async () => {
     })
   ).body.entry.id
   v.measurementId = (
-    await post("/api/tracking/measurements", { waistCm: 81, note: "monday" })
+    await post("/api/tracking/measurements", {
+      values: { waist_cm: 81 },
+      note: "monday",
+    })
   ).body.id
   v.hydrationId = (
     await post("/api/tracking/hydration", { amountMl: 500, note: "morning" })
   ).body.id
   v.sorenessId = (
     await post("/api/tracking/soreness", { muscleGroup: "chest", intensity: 6 })
-  ).body.id
+  ).body.data.id
   v.menstrualId = (
     await post("/api/tracking/menstrual", { cycleStart: "2024-05-01" })
-  ).body.id
+  ).body.data.id
   v.macroId = (
     await post("/api/tracking/macros/log", {
       name: "lunch",
       protein: 20,
-      time: "12:30",
       takenAt: "2024-06-01T12:30:00Z",
     })
   ).body.entry.id
-  v.domsId = (
-    await post("/api/tracking/doms/log", { muscleGroup: "quads", intensity: 5 })
-  ).body.data.id
   v.supplementId = (
     await post("/api/tracking/supplements", { name: "Vitamin D" })
   ).body.supplement.id
   v.supplementLogId = (
     await post(`/api/tracking/supplements/${v.supplementId}/log`, { amount: 1 })
   ).body.id
-  v.customTypeId = (
-    await post("/api/tracking/custom-measurements/types", {
-      keyName: "grip",
-      label: "Grip",
-      unit: "kg",
-    })
-  ).body.data.id
+  // A metric only this user has defined — the attacker must not be able to
+  // write against it, and it must not surface in their definitions list.
+  await post("/api/tracking/measurements/definitions", {
+    keyName: "grip_kg",
+    label: "Grip",
+    unit: "kg",
+  })
 
   const photo = await request(app)
     .post("/api/tracking/photos/muscle")
@@ -162,15 +161,15 @@ describe("cross-user reads are denied", () => {
     ["/api/sessions", "sessions"],
     ["/api/tracking/bodystats/weight", "entries"],
     ["/api/tracking/bodystats/bodyfat/log", "entries"],
-    ["/api/tracking/measurements", "data"],
+    ["/api/tracking/measurements?metrics=waist_cm", "data"],
     ["/api/tracking/hydration", "data"],
     ["/api/tracking/soreness", "data"],
+    ["/api/tracking/soreness/active", "data"],
     ["/api/tracking/menstrual", "data"],
     ["/api/tracking/macros/log", "entries"],
     ["/api/tracking/supplements", "supplements"],
     ["/api/tracking/photos/muscle", "data"],
-    ["/api/tracking/doms/active", "data"],
-    ["/api/tracking/custom-measurements/types", "data"],
+    ["/api/tracking/measurements/definitions", "data"],
   ]
 
   it.each(lists)(
@@ -286,10 +285,10 @@ describe("cross-user writes and deletes are denied", () => {
           .set(auth(attacker.token)),
     ],
     [
-      "follow up on someone else's DOMS record",
+      "follow up on someone else's soreness entry",
       () =>
         request(app)
-          .put(`/api/tracking/doms/${v.domsId}/followup`)
+          .post(`/api/tracking/soreness/${v.sorenessId}/follow-ups`)
           .set(auth(attacker.token))
           .send({ intensity: 1, status: "recovered" }),
     ],
@@ -318,12 +317,12 @@ describe("cross-user writes and deletes are denied", () => {
           .set(auth(attacker.token)),
     ],
     [
-      "log a value against someone else's custom measurement type",
+      "log a value against someone else's metric definition",
       () =>
         request(app)
-          .post("/api/tracking/custom-measurements/values")
+          .post("/api/tracking/measurements")
           .set(auth(attacker.token))
-          .send({ typeId: v.customTypeId, value: 1 }),
+          .send({ values: { grip_kg: 1 } }),
     ],
   ]
 
@@ -483,7 +482,7 @@ describe("trainer mode stays inside its routers", () => {
     ["/api/tracking/bodystats/weight", "entries"],
     ["/api/tracking/menstrual", "data"],
     ["/api/tracking/photos/muscle", "data"],
-    ["/api/tracking/measurements", "data"],
+    ["/api/tracking/measurements?metrics=waist_cm", "data"],
     ["/api/tracking/hydration", "data"],
   ]
 

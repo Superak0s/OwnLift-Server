@@ -20,26 +20,26 @@ export async function getAnalytics(
 ): Promise<AnalyticsSummary> {
   let q = `
     SELECT
-      COALESCE(ROUND(AVG(st.set_duration + COALESCE(st.rest_time, 0))), 120) AS avg_time_between_sets,
-      COUNT(DISTINCT s.id) AS total_sessions,
-      COUNT(st.id) AS total_sets,
-      COALESCE(SUM(st.weight * st.reps), 0) AS total_volume,
-      COALESCE(ROUND(AVG(st.rest_time)), 0) AS avg_rest_time,
-      COALESCE(ROUND(AVG(st.set_duration)), 0) AS avg_set_duration,
-      MIN(s.start_time) AS first_session,
-      MAX(s.start_time) AS last_session
-    FROM sessions s
-    LEFT JOIN set_timings st ON s.id = st.session_id
-    WHERE s.user_id = ? AND s.end_time IS NOT NULL
-      AND s.start_time >= (NOW() - INTERVAL ? DAY)`
+      COALESCE(ROUND(AVG(ws.set_duration + COALESCE(ws.rest_time, 0))), 120) AS avg_time_between_sets,
+      COUNT(DISTINCT w.id) AS total_sessions,
+      COUNT(ws.id) AS total_sets,
+      COALESCE(SUM(ws.weight * ws.reps), 0) AS total_volume,
+      COALESCE(ROUND(AVG(ws.rest_time)), 0) AS avg_rest_time,
+      COALESCE(ROUND(AVG(ws.set_duration)), 0) AS avg_set_duration,
+      MIN(w.start_time) AS first_session,
+      MAX(w.start_time) AS last_session
+    FROM workouts w
+    LEFT JOIN workout_sets ws ON w.id = ws.workout_id
+    WHERE w.user_id = ? AND w.end_time IS NOT NULL AND w.is_demo = 0
+      AND w.start_time >= (NOW() - INTERVAL ? DAY)`
   const params: any[] = [userId, days]
   if (split) {
-    q += ` AND s.\`split\` = ?`
+    q += ` AND w.split = ?`
     params.push(split)
   }
   // Use != null so dayNumber = 0 is still applied (falsy check would skip it)
   if (dayNumber != null) {
-    q += ` AND s.day_number = ?`
+    q += ` AND w.day_number = ?`
     params.push(dayNumber)
   }
   const [rows] = await pool.execute<AnalyticsSummary[]>(q, params)

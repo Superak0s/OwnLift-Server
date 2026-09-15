@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
+import express from "express"
 import request from "supertest"
 import packageJson from "../package.json" with { type: "json" }
 import { app, signup, auth } from "../tests/helpers.js"
@@ -8,6 +9,22 @@ describe("app-level routes", () => {
     const res = await request(app).get("/healthz")
     expect(res.status).toBe(200)
     expect(res.body.status).toBe("OK")
+  })
+
+  it("does not mount routes for features in LOCAL_ONLY_FEATURES", async () => {
+    process.env.LOCAL_ONLY_FEATURES = "tracking,supplements"
+    vi.resetModules()
+    const { registerRoutes, localOnlyFeatures } = await import("../routes.js")
+    const gated = express()
+    registerRoutes(gated)
+    gated.use((_req, res) => res.status(404).json({ success: false }))
+    delete process.env.LOCAL_ONLY_FEATURES
+
+    expect(localOnlyFeatures).toEqual(["tracking", "supplements"])
+    expect((await request(gated).get("/api/tracking/hydration")).status).toBe(404)
+    expect((await request(gated).get("/api/tracking/supplements")).status).toBe(404)
+    // Everything else still routes; without a token it is 401, not 404.
+    expect((await request(gated).get("/api/sessions")).status).toBe(401)
   })
 
   it("unknown API routes 404", async () => {

@@ -189,7 +189,7 @@ router.delete("/:id/log/:entryId", async (req: Request, res: Response) => {
 
   const entryId = parseIntParam(String(req.params.entryId), "entry ID")
 
-  const deleted = await deleteLogEntry(req.user!.id, entryId)
+  const deleted = await deleteLogEntry(req.user!.id, supplementId, entryId)
   if (!deleted) throw new NotFoundError("Log entry")
   res.json({ success: true })
 })

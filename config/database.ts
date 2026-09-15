@@ -5,6 +5,7 @@ import type { RowDataPacket } from "mysql2/promise";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { logger } from "../utils/logger.js";
+import { ValidationError } from "../middleware/errorHandler.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -28,7 +29,7 @@ export const pool: Pool = mysql.createPool({
   // concurrent queries on one core is thrash, not throughput, and every idle
   // connection carries its own MySQL thread buffers and prepared-statement
   // cache. Eight rather than six leaves headroom above the widest fan-out in
-  // the codebase (getDOMSStats issues six in parallel); queueLimit absorbs
+  // the codebase (getSorenessStats issues six in parallel); queueLimit absorbs
   // anything past that.
   connectionLimit: 8,
   // Bounded rather than unlimited (0): under a real overload, requests should
@@ -58,6 +59,10 @@ pool.on("connection", (connection) => {
  */
 export function formatDateForMySQL(date: string | Date): string {
   const d = date instanceof Date ? date : new Date(date)
+  // toISOString throws RangeError on an invalid date — an unvalidated client
+  // timestamp used to reach the error handler as a 500 for what is a 400.
+  if (Number.isNaN(d.getTime()))
+    throw new ValidationError(`Invalid timestamp: ${String(date)}`)
   return d.toISOString().slice(0, 19).replace("T", " ")
 }
 

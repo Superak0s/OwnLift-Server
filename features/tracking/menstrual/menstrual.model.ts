@@ -1,16 +1,26 @@
-// Track menstrual cycle phases and symptoms
+// Menstrual cycles: one row per cycle, plus a phase estimate derived from them.
+//
+// Cycle *length* is the gap between consecutive cycle_start values, so nothing
+// stores a duration that can disagree with the dates. Period/cycle preferences
+// live in user_settings with every other preference.
 
-import { pool, formatDateForMySQL } from "@/config/database.js"
+import { pool, formatDateForMySQL, parseMySQLDate } from "@/config/database.js"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
-import { ValidationError } from "@/middleware/errorHandler.js"
+import {
+  ValidationError,
+  NotFoundError,
+  throwCheckViolation,
+} from "@/middleware/errorHandler.js"
+import { getUserSettings } from "@/features/settings/settings.model.js"
 
-interface MenstrualEntry {
+export interface MenstrualEntry extends RowDataPacket {
   id: number
-  cycleStart: Date
-  durationDays: number | null
-  symptoms?: string[] | null
-  createdAt: Date
-  updatedAt: Date
+  cycleStart: string
+  cycleEnd: string | null
+  /** Parsed by the driver — the column is JSON, not a TEXT blob of JSON. */
+  symptoms: string[]
+  createdAt: string
+  updatedAt: string
 }
 
 interface CyclePhase {
@@ -26,136 +36,166 @@ interface CycleStats {
   lastCycleEntry: MenstrualEntry | null
 }
 
-// ─── DB row shapes ────────────────────────────────────────────────────────────
+const CYCLE_COLS = `id, cycle_start AS cycleStart, cycle_end AS cycleEnd,
+       symptoms, created_at AS createdAt, updated_at AS updatedAt`
 
-interface MenstrualRow extends RowDataPacket {
-  id: number
-  cycle_start: Date
-  cycle_end: Date | null
-  duration_days: number | null
-  symptoms: string | null
-  created_at: Date
-  updated_at: Date
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function requireSymptoms(symptoms: unknown): string[] {
+  if (symptoms == null) return []
+  if (!Array.isArray(symptoms) || symptoms.some((s) => typeof s !== "string"))
+    throw new ValidationError("symptoms must be an array of strings")
+  return symptoms as string[]
 }
-
-// ─── Queries ──────────────────────────────────────────────────────────────────
 
 export async function logMenstrualCycle(
   userId: number,
   cycleStart: string,
-  symptoms?: string[] | null,
-): Promise<number> {
-  const start = new Date(cycleStart)
-  if (isNaN(start.getTime())) {
+  symptoms?: unknown,
+): Promise<MenstrualEntry> {
+  if (isNaN(new Date(cycleStart).getTime()))
     throw new ValidationError("Invalid cycle start date")
-  }
-
-  const symptomsJson = symptoms ? JSON.stringify(symptoms) : null
 
   const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO menstrual_cycle (user_id, cycle_start, symptoms)
-     VALUES (?, ?, ?)`,
-    [userId, formatDateForMySQL(cycleStart), symptomsJson],
+    `INSERT INTO menstrual_cycle (user_id, cycle_start, symptoms) VALUES (?, ?, ?)`,
+    [
+      userId,
+      formatDateForMySQL(cycleStart),
+      JSON.stringify(requireSymptoms(symptoms)),
+    ],
   )
-  return result.insertId
+  return getCycleById(userId, result.insertId)
+}
+
+async function getCycleById(
+  userId: number,
+  id: number,
+): Promise<MenstrualEntry> {
+  const [rows] = await pool.execute<MenstrualEntry[]>(
+    `SELECT ${CYCLE_COLS} FROM menstrual_cycle WHERE id = ? AND user_id = ?`,
+    [id, userId],
+  )
+  if (!rows[0]) throw new NotFoundError("Menstrual entry")
+  return rows[0]
+}
+
+/**
+ * A cycle is not over when it is logged — the period ends days later, and the
+ * symptom list grows while it runs. Before this the row was write-once.
+ */
+export async function updateMenstrualCycle(
+  userId: number,
+  id: number,
+  updates: { cycleEnd?: string | null; symptoms?: unknown },
+): Promise<MenstrualEntry> {
+  const fields: string[] = []
+  const values: (string | null)[] = []
+
+  if (updates.cycleEnd !== undefined) {
+    // ck_mc_dates rejects an end before the start.
+    fields.push("cycle_end = ?")
+    values.push(updates.cycleEnd ? formatDateForMySQL(updates.cycleEnd) : null)
+  }
+  if (updates.symptoms !== undefined) {
+    fields.push("symptoms = ?")
+    values.push(JSON.stringify(requireSymptoms(updates.symptoms)))
+  }
+  if (!fields.length) throw new ValidationError("No valid fields to update")
+
+  try {
+    const [result] = await pool.execute<ResultSetHeader>(
+      `UPDATE menstrual_cycle SET ${fields.join(", ")} WHERE id = ? AND user_id = ?`,
+      [...values, id, userId],
+    )
+    if (result.affectedRows === 0) throw new NotFoundError("Menstrual entry")
+    return getCycleById(userId, id)
+  } catch (err) {
+    // ck_mc_dates: an end before the start is a bad request, not a 500.
+    throw throwCheckViolation(err, "Cycle end cannot be before cycle start")
+  }
 }
 
 export async function getMenstrualHistory(
   userId: number,
   limit = 12,
 ): Promise<MenstrualEntry[]> {
-  const [rows] = await pool.execute<MenstrualRow[]>(
-    `SELECT id, cycle_start, cycle_end, duration_days, symptoms, created_at, updated_at
-     FROM menstrual_cycle WHERE user_id = ? ORDER BY cycle_start DESC LIMIT ?`,
+  const [rows] = await pool.execute<MenstrualEntry[]>(
+    `SELECT ${CYCLE_COLS} FROM menstrual_cycle
+     WHERE user_id = ? ORDER BY cycle_start DESC LIMIT ?`,
     [userId, limit],
   )
-  return rows.map(formatEntry)
-}
-
-async function getLastMenstrualCycle(
-  userId: number,
-): Promise<MenstrualEntry | null> {
-  const [rows] = await pool.execute<MenstrualRow[]>(
-    `SELECT id, cycle_start, cycle_end, duration_days, symptoms, created_at, updated_at
-     FROM menstrual_cycle WHERE user_id = ? ORDER BY cycle_start DESC LIMIT 1`,
-    [userId],
-  )
-  return rows[0] ? formatEntry(rows[0]) : null
+  return rows
 }
 
 export async function getCycleStats(userId: number): Promise<CycleStats> {
-  const last = await getLastMenstrualCycle(userId)
+  const [[lastRows], [avgRows], settings] = await Promise.all([
+    pool.execute<MenstrualEntry[]>(
+      `SELECT ${CYCLE_COLS} FROM menstrual_cycle
+       WHERE user_id = ? ORDER BY cycle_start DESC LIMIT 1`,
+      [userId],
+    ),
+    // The observed cycle length: the average gap between one cycle_start and
+    // the next. No stored duration_days to keep in sync.
+    pool.execute<(RowDataPacket & { avgDays: number | null })[]>(
+      `SELECT AVG(gap) AS avgDays FROM (
+         SELECT DATEDIFF(cycle_start, LAG(cycle_start) OVER (ORDER BY cycle_start)) AS gap
+         FROM menstrual_cycle WHERE user_id = ?
+       ) AS gaps WHERE gap IS NOT NULL`,
+      [userId],
+    ),
+    getUserSettings(userId),
+  ])
 
-  // Calculate average cycle length from completed cycles
-  const [avgRows] = await pool.execute<RowDataPacket[]>(
-    `SELECT AVG(duration_days) AS avg_cycle_length FROM menstrual_cycle
-     WHERE user_id = ? AND duration_days IS NOT NULL`,
-    [userId],
-  )
-  const dbAvgCycleLength = avgRows[0]?.avg_cycle_length || null
+  const last = lastRows[0] ?? null
+  const cycleLength = Number(avgRows[0]?.avgDays) || settings.cycleLengthDays
+  const periodDays = settings.cyclePeriodDays
 
-  // Load user settings (may override defaults)
-  const settings = await getMenstrualSettings(userId)
-  const avgCycleLength = dbAvgCycleLength || settings.cycleLengthDays || 28
-  const periodDays = settings.periodDays || 5
-
-  let currentPhase: CyclePhase | null = null
-  let nextPeriodEstimate: Date | null = null
-
-  if (last) {
-    const now = new Date()
-    const cycleStartDate = new Date(last.cycleStart)
-    const daysSinceStart = Math.floor(
-      (now.getTime() - cycleStartDate.getTime()) / (1000 * 60 * 60 * 24),
-    )
-
-    // Estimate next period
-    const nextPeriod = new Date(cycleStartDate)
-    nextPeriod.setDate(nextPeriod.getDate() + Math.ceil(avgCycleLength))
-    nextPeriodEstimate = nextPeriod
-
-    // Determine current phase using configured periodDays and a simplified model
-    const menstruationDays = periodDays
-    if (daysSinceStart <= menstruationDays) {
-      currentPhase = {
-        phase: "menstruation",
-        daysInPhase: daysSinceStart,
-        estimatedEnd: new Date(
-          cycleStartDate.getTime() + menstruationDays * 24 * 60 * 60 * 1000,
-        ),
-      }
-    } else if (daysSinceStart <= menstruationDays + 7) {
-      // follicular
-      currentPhase = {
-        phase: "follicular",
-        daysInPhase: daysSinceStart - menstruationDays,
-        estimatedEnd: new Date(
-          cycleStartDate.getTime() +
-            (menstruationDays + 7) * 24 * 60 * 60 * 1000,
-        ),
-      }
-    } else if (daysSinceStart <= menstruationDays + 11) {
-      // ovulation window
-      currentPhase = {
-        phase: "ovulation",
-        daysInPhase: daysSinceStart - (menstruationDays + 7),
-        estimatedEnd: new Date(
-          cycleStartDate.getTime() +
-            (menstruationDays + 11) * 24 * 60 * 60 * 1000,
-        ),
-      }
-    } else {
-      currentPhase = {
-        phase: "luteal",
-        daysInPhase: daysSinceStart - (menstruationDays + 11),
-        estimatedEnd: new Date(nextPeriod),
-      }
+  if (!last) {
+    return {
+      currentPhase: null,
+      averageCycleLength: Math.round(cycleLength),
+      nextPeriodEstimate: null,
+      lastCycleEntry: null,
     }
   }
 
+  // cycle_start comes back zoneless ("2026-09-08 22:45:33", stored UTC);
+  // `new Date(...)` would read it as local time and shift the phase by the
+  // box's offset.
+  const start = parseMySQLDate(last.cycleStart)
+  const day = Math.floor((Date.now() - start.getTime()) / DAY_MS)
+  const endOf = (n: number) => new Date(start.getTime() + n * DAY_MS)
+  const nextPeriodEstimate = endOf(Math.ceil(cycleLength))
+
+  // A deliberately simple model: period, then a fixed follicular and ovulation
+  // window, then luteal until the next period is due.
+  // ponytail: fixed windows, not a fertility tracker. Widen only if asked.
+  const follicularEnd = periodDays + 7
+  const ovulationEnd = periodDays + 11
+  const currentPhase: CyclePhase =
+    day <= periodDays
+      ? { phase: "menstruation", daysInPhase: day, estimatedEnd: endOf(periodDays) }
+      : day <= follicularEnd
+        ? {
+            phase: "follicular",
+            daysInPhase: day - periodDays,
+            estimatedEnd: endOf(follicularEnd),
+          }
+        : day <= ovulationEnd
+          ? {
+              phase: "ovulation",
+              daysInPhase: day - follicularEnd,
+              estimatedEnd: endOf(ovulationEnd),
+            }
+          : {
+              phase: "luteal",
+              daysInPhase: day - ovulationEnd,
+              estimatedEnd: nextPeriodEstimate,
+            }
+
   return {
     currentPhase,
-    averageCycleLength: Math.round(avgCycleLength),
+    averageCycleLength: Math.round(cycleLength),
     nextPeriodEstimate,
     lastCycleEntry: last,
   }
@@ -164,76 +204,10 @@ export async function getCycleStats(userId: number): Promise<CycleStats> {
 export async function deleteMenstrualEntry(
   userId: number,
   entryId: number,
-): Promise<{ deleted: boolean; wasCycleStart: boolean }> {
-  // Check whether this entry exists and whether it was a cycle start (i.e., cycle_start is set)
-  const [check] = await pool.execute<MenstrualRow[]>(
-    `SELECT id, cycle_start FROM menstrual_cycle WHERE id = ? AND user_id = ?`,
-    [entryId, userId],
-  )
-  if (!check[0]) return { deleted: false, wasCycleStart: false }
-
-  const wasCycleStart = !!check[0].cycle_start
-
+): Promise<boolean> {
   const [result] = await pool.execute<ResultSetHeader>(
     `DELETE FROM menstrual_cycle WHERE id = ? AND user_id = ?`,
     [entryId, userId],
   )
-  const deleted = result.affectedRows > 0
-  return { deleted, wasCycleStart }
-}
-
-// Menstrual settings stored per-user (period length, cycle length)
-interface MenstrualSettings {
-  periodDays: number
-  cycleLengthDays: number
-  updatedAt: Date | null
-}
-
-export async function getMenstrualSettings(
-  userId: number,
-): Promise<MenstrualSettings> {
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT period_days, cycle_length_days, updated_at FROM menstrual_settings WHERE user_id = ?`,
-    [userId],
-  )
-  if (!rows[0]) {
-    return { periodDays: 5, cycleLengthDays: 28, updatedAt: null }
-  }
-  return {
-    periodDays: parseInt(String(rows[0].period_days)) || 5,
-    cycleLengthDays: parseInt(String(rows[0].cycle_length_days)) || 28,
-    updatedAt: rows[0].updated_at || null,
-  }
-}
-
-export async function setMenstrualSettings(
-  userId: number,
-  settings: Partial<{ periodDays: number; cycleLengthDays: number }>,
-): Promise<void> {
-  const pd = settings.periodDays ?? null
-  const cl = settings.cycleLengthDays ?? null
-  await pool.execute(
-    // COALESCE on insert: the client may send only one of the two, and the
-    // columns are NOT NULL.
-    `INSERT INTO menstrual_settings (user_id, period_days, cycle_length_days)
-     VALUES (?, COALESCE(?, DEFAULT(period_days)), COALESCE(?, DEFAULT(cycle_length_days)))
-     ON DUPLICATE KEY UPDATE
-       period_days = COALESCE(VALUES(period_days), period_days),
-       cycle_length_days = COALESCE(VALUES(cycle_length_days), cycle_length_days),
-       updated_at = NOW()`,
-    [userId, pd, cl],
-  )
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatEntry(row: MenstrualRow): MenstrualEntry {
-  return {
-    id: row.id,
-    cycleStart: row.cycle_start,
-    durationDays: row.duration_days,
-    symptoms: row.symptoms ? JSON.parse(row.symptoms) : null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  }
+  return result.affectedRows > 0
 }

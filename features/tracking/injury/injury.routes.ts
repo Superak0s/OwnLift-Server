@@ -1,12 +1,14 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
-import { ValidationError } from "@/middleware/errorHandler.js"
-import { queryLimit } from "@/middleware/validation.js"
+import { ValidationError, NotFoundError } from "@/middleware/errorHandler.js"
+import { queryLimit, parseIntParam } from "@/middleware/validation.js"
 import {
   logInjury,
   getAllInjuries,
   getInjuriesByMuscle,
   getActiveInjuries,
+  updateInjury,
+  deleteInjury,
 } from "./injury.model.js"
 
 const router: Router = Router()
@@ -17,7 +19,7 @@ const LIST_LIMIT = (req: Request) => queryLimit(req, { def: 100, max: 500 })
 router.use(authenticateToken)
 
 router.post("/", async (req: Request, res: Response) => {
-  const { muscleGroup, injuryType, painLevel, startDate, notes } = req.body
+  const { muscleGroup, injuryType, painLevel, startDate, note } = req.body
 
   if (!muscleGroup || !injuryType || painLevel === undefined || painLevel === null) {
     throw new ValidationError("Muscle group, injury type, and pain level are required")
@@ -29,7 +31,7 @@ router.post("/", async (req: Request, res: Response) => {
     injuryType,
     painLevel,
     startDate || new Date().toISOString(),
-    notes || null,
+    note || null,
   )
   res.status(201).json({ success: true, data: result })
 })
@@ -39,15 +41,35 @@ router.get("/", async (req: Request, res: Response) => {
   res.json({ success: true, data: injuries })
 })
 
+// Static paths before the dynamic /:id routes.
+router.get("/active", async (req: Request, res: Response) => {
+  const injuries = await getActiveInjuries(req.user!.id, LIST_LIMIT(req))
+  res.json({ success: true, data: injuries })
+})
+
 router.get("/muscle/:muscle", async (req: Request, res: Response) => {
   const muscle = String(req.params.muscle)
   const injuries = await getInjuriesByMuscle(req.user!.id, muscle, LIST_LIMIT(req))
   res.json({ success: true, data: injuries })
 })
 
-router.get("/active", async (req: Request, res: Response) => {
-  const injuries = await getActiveInjuries(req.user!.id, LIST_LIMIT(req))
-  res.json({ success: true, data: injuries })
+/** An injury changes as it heals — pain level, status, recovery date, note. */
+router.patch("/:id", async (req: Request, res: Response) => {
+  const id = parseIntParam(String(req.params.id), "injury ID")
+  const { painLevel, status, recoveryDate, note } = req.body
+  const injury = await updateInjury(req.user!.id, id, {
+    painLevel,
+    status,
+    recoveryDate,
+    note,
+  })
+  res.json({ success: true, data: injury })
+})
+
+router.delete("/:id", async (req: Request, res: Response) => {
+  const id = parseIntParam(String(req.params.id), "injury ID")
+  if (!(await deleteInjury(req.user!.id, id))) throw new NotFoundError("Injury")
+  res.json({ success: true })
 })
 
 export default router

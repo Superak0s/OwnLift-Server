@@ -1,9 +1,12 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
-import { queryLimit } from "@/middleware/validation.js"
+import { queryLimit, parseIntParam } from "@/middleware/validation.js"
+import { NotFoundError } from "@/middleware/errorHandler.js"
 import {
   createNote,
   getNotesByMuscle,
+  updateNote,
+  deleteNote,
 } from "./personalNotes.model.js"
 
 const router: Router = Router()
@@ -24,6 +27,18 @@ router.get("/muscle/:muscleGroup", async (req: Request, res: Response) => {
     queryLimit(req, { def: 100, max: 500 }),
   )
   res.json({ success: true, data: notes })
+})
+
+router.patch("/:id", async (req: Request, res: Response) => {
+  const id = parseIntParam(String(req.params.id), "note ID")
+  const note = await updateNote(req.user!.id, id, req.body.content)
+  res.json({ success: true, data: note })
+})
+
+router.delete("/:id", async (req: Request, res: Response) => {
+  const id = parseIntParam(String(req.params.id), "note ID")
+  if (!(await deleteNote(req.user!.id, id))) throw new NotFoundError("Note")
+  res.json({ success: true })
 })
 
 export default router

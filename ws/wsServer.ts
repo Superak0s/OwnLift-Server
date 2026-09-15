@@ -351,9 +351,14 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
 
   wsCleanup = () => {
     clearInterval(heartbeat)
-    clients.forEach((ws) => ws.close(1001, "Server shutting down"))
+    // Every socket, not just authenticated ones: a socket still inside its 5s
+    // auth window is not in `clients` yet, and any open socket keeps the
+    // shared http.Server alive, so shutdown()'s server.close() callback would
+    // never run.
+    wss.clients.forEach((ws) => ws.close(1001, "Server shutting down"))
     clients.clear()
     msgCount.clear()
+    wss.close()
   }
 
   return wss

@@ -15,7 +15,7 @@ describe("workout session routes", () => {
   it("lists sessions (empty) and rejects bad starts", async () => {
     const empty = await request(app).get("/api/sessions").set(auth(a.token))
     expect(empty.status).toBe(200)
-    expect(empty.body.total).toBe(0)
+    expect(empty.body.sessions).toHaveLength(0)
 
     const bad = await request(app)
       .post("/api/sessions/start")
@@ -145,7 +145,7 @@ describe("workout session routes", () => {
     expect(end.body.session.endTime).toBeTruthy()
 
     const history = await request(app).get("/api/sessions").set(auth(a.token))
-    expect(history.body.total).toBe(1)
+    expect(history.body.sessions).toHaveLength(1)
   })
 
   it("deletes demo and per-split history", async () => {

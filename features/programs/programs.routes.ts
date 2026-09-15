@@ -43,10 +43,10 @@ router.get("/", async (req: Request, res: Response) => {
  * shape and persists it — no file handling on the server anymore. Size is
  * capped by the 2 MB express.json parser mounted on this path in server.ts.
  */
-// denyTrainer: upsertProgram is ON DUPLICATE KEY UPDATE program_data, a whole
-// replace rather than a merge, so without this a trainer could post an empty
-// weeklyPlan with X-Trainee-Id and erase the trainee's program outright. There
-// is no versioning to recover it from.
+// denyTrainer: upsertProgram replaces the caller's whole program rather than
+// merging into it, so without this a trainer could post an empty weeklyPlan
+// with X-Trainee-Id and erase the trainee's program outright. There is no
+// versioning to recover it from.
 router.post("/upload", denyTrainer, async (req: Request, res: Response) => {
   const { weeklyPlan, originalFilename } = req.body
 

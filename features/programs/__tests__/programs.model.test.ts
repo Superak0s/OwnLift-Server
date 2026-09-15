@@ -1,8 +1,13 @@
-import { describe, it, expect } from "vitest"
-import { normalizeProgram } from "../programs.model.js"
+import { describe, it, expect, beforeAll } from "vitest"
+import { signup } from "../../../tests/helpers.js"
+import { upsertProgram, getProgramByUserId } from "../programs.model.js"
 import type { ProgramData } from "../programs.types.js"
 
-const raw = {
+// The program is relational now, so the thing worth checking is that rows
+// reassemble into the JSON the app reads: per-split lists, the derived flat
+// exercises[] with setsBySplit, a null exerciseId for a custom exercise, and
+// the machine settings surviving a save/load round trip.
+const plan: ProgramData = {
   split: ["PPL"],
   days: [
     {
@@ -10,21 +15,7 @@ const raw = {
       dayTitle: "Push",
       primaryMuscles: ["chest"],
       secondaryMuscles: ["triceps"],
-      exercises: [
-        {
-          name: "Bench",
-          primaryMuscles: ["chest"],
-          secondaryMuscles: [],
-          setsBySplit: { PPL: 4 },
-        },
-        {
-          name: "Fly",
-          primaryMuscles: ["chest"],
-          secondaryMuscles: ["triceps"],
-          exerciseId: "Cable_Fly",
-          setsBySplit: { PPL: 3 },
-        },
-      ],
+      exercises: [],
       split: {
         PPL: {
           exercises: [
@@ -39,14 +30,13 @@ const raw = {
               primaryMuscles: ["chest"],
               secondaryMuscles: ["triceps"],
               sets: 3,
+              reps: "8-12",
               exerciseId: "Cable_Fly",
-              // The machine list is client-owned and unknown to the server;
-              // it only has to survive a save/load round-trip untouched.
               machines: ["Machine A", "Smith"],
               selectedMachine: "Machine A",
               defaultMachine: "Smith",
-              bestAcrossMachines: { "Machine A": 60 },
-              machineMeta: { "Machine A": { note: "seat 4", pin: true } },
+              bestAcrossMachines: true,
+              machineMeta: { "Machine A": { note: "seat 4", setting: "3" } },
             },
           ],
           totalSets: 7,
@@ -54,28 +44,47 @@ const raw = {
       },
     },
   ],
-} as unknown as ProgramData
+}
 
-describe("normalizeProgram", () => {
-  it("defaults a missing exerciseId to null and keeps a supplied one", () => {
-    const p = normalizeProgram(raw)
-    const [unmatched, matched] = p.days[0].exercises
+describe("programs model", () => {
+  let userId: number
 
-    expect(unmatched.exerciseId).toBe(null)
-    expect(matched.setsBySplit).toEqual({ PPL: 3 })
-    expect(matched.exerciseId).toBe("Cable_Fly")
-    expect(p.days[0].split.PPL.exercises[0].exerciseId).toBe(null)
-    expect(p.days[0].split.PPL.exercises[1].exerciseId).toBe("Cable_Fly")
+  beforeAll(async () => {
+    userId = (await signup("progm")).user.id
   })
 
-  it("round-trips unknown per-exercise keys through the JSON column verbatim", () => {
-    const p = normalizeProgram(raw)
-    const roundTripped = normalizeProgram(
-      JSON.parse(JSON.stringify(p)) as ProgramData,
-    )
+  it("round-trips a program through the relational tables", async () => {
+    await upsertProgram(userId, plan, "plan.csv")
+    const stored = await getProgramByUserId(userId)
 
-    expect(roundTripped.days[0].split.PPL.exercises[1]).toEqual(
-      p.days[0].split.PPL.exercises[1],
-    )
+    expect(stored?.originalFilename).toBe("plan.csv")
+    const day = stored!.programData.days[0]
+    expect(stored!.programData.split).toEqual(["PPL"])
+    expect(day.dayTitle).toBe("Push")
+    expect(day.primaryMuscles).toEqual(["chest"])
+
+    const [bench, fly] = day.split.PPL.exercises
+    expect(day.split.PPL.totalSets).toBe(7)
+    expect(bench.exerciseId).toBe(null)
+    expect(bench.sets).toBe(4)
+    expect(fly.exerciseId).toBe("Cable_Fly")
+    expect(fly.reps).toBe("8-12")
+    expect(fly.machines).toEqual(["Machine A", "Smith"])
+    expect(fly.machineMeta).toEqual({
+      "Machine A": { note: "seat 4", setting: "3" },
+    })
+
+    // exercises[] is derived from the split rows, not stored alongside them.
+    expect(day.exercises.map((e) => e.name)).toEqual(["Bench", "Fly"])
+    expect(day.exercises[1].setsBySplit).toEqual({ PPL: 3 })
+  })
+
+  it("re-uploading replaces the program without duplicating days", async () => {
+    await upsertProgram(userId, plan, "plan2.csv")
+    const stored = await getProgramByUserId(userId)
+
+    expect(stored?.originalFilename).toBe("plan2.csv")
+    expect(stored!.programData.days).toHaveLength(1)
+    expect(stored!.programData.days[0].split.PPL.exercises).toHaveLength(2)
   })
 })

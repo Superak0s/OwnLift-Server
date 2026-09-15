@@ -19,14 +19,15 @@ interface PermissionRow extends RowDataPacket {
   fromUserId?: number
   toUserId?: number
   permissionType: PermissionType
-  payload: string | null
+  /** JSON column — the driver hands back the parsed object. */
+  payload: Record<string, unknown> | null
   createdAt: Date
   updatedAt: Date
   fromUsername?: string
   toUsername?: string
 }
 
-interface FriendSessionRow extends RowDataPacket {
+interface FriendWorkoutRow extends RowDataPacket {
   id: number
   dayNumber: number
   dayTitle: string
@@ -34,17 +35,15 @@ interface FriendSessionRow extends RowDataPacket {
   endTime: Date | string | null
   totalDuration: number | null
   completedSets: number
-  // JSON column — mysql2 auto-parses this to string[] for most rows, but
-  // some legacy rows hold a plain comma-joined string. See parseMuscleGroups.
-  primaryMuscles: string | string[]
-  secondaryMuscles: string | string[]
+  primaryMuscles: unknown
+  secondaryMuscles: unknown
 }
 
 interface InviteRow extends RowDataPacket {
   id: number
   from_user_id: number
   to_user_id: number
-  from_session_id: number | null
+  from_workout_id: number | null
   status: string
   expires_at: Date
   created_at: Date
@@ -52,15 +51,15 @@ interface InviteRow extends RowDataPacket {
 }
 
 interface ParticipantRow extends RowDataPacket {
-  user_id: number
-  session_id: number | null
-  username: string | null
-  exercise_index: number | null
-  set_index: number | null
-  exercise_name: string | null
-  ready_for_next: number
-  exercise_names: string | null
-  last_updated: Date
+  userId: number
+  sessionId: number | null
+  username: string
+  exerciseIndex: number
+  setIndex: number
+  exerciseName: string | null
+  readyForNext: number
+  exerciseNames: string[] | null
+  lastUpdated: Date
 }
 
 const VALID_PERMISSION_TYPES: PermissionType[] = [
@@ -74,6 +73,13 @@ const VALID_PERMISSION_TYPES: PermissionType[] = [
 
 const INVITE_TTL_SECONDS = 120
 
+// The pair is stored canonically (user_id = LEAST, friend_id = GREATEST), so
+// checking a live friendship against a grant is one equality per column.
+const ACCEPTED_FRIENDSHIP_JOIN = `JOIN friendships f
+       ON f.status = 'accepted'
+      AND f.user_id = LEAST(sp.from_user_id, sp.to_user_id)
+      AND f.friend_id = GREATEST(sp.from_user_id, sp.to_user_id)`
+
 export async function grantPermission(
   fromUserId: number,
   toUserId: number,
@@ -84,9 +90,9 @@ export async function grantPermission(
     throw new ValidationError(`Invalid permission type: ${permissionType}`)
 
   const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO sharing_permissions (from_user_id, to_user_id, permission_type, payload, created_at, updated_at)
-     VALUES (?, ?, ?, ?, NOW(), NOW())
-     ON DUPLICATE KEY UPDATE payload = VALUES(payload), updated_at = NOW()`,
+    `INSERT INTO sharing_permissions (from_user_id, to_user_id, permission_type, payload)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), payload = VALUES(payload)`,
     [
       fromUserId,
       toUserId,
@@ -94,26 +100,20 @@ export async function grantPermission(
       payload ? JSON.stringify(payload) : null,
     ],
   )
-  const insertResult = result
-  if (insertResult.insertId > 0) return insertResult.insertId
-
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT id FROM sharing_permissions WHERE from_user_id = ? AND to_user_id = ? AND permission_type = ?`,
-    [fromUserId, toUserId, permissionType],
-  )
-  return rows[0].id
+  // LAST_INSERT_ID(id) on the duplicate branch means insertId is the existing
+  // row's id, so re-granting doesn't need a second SELECT.
+  return result.insertId
 }
 
 export async function revokePermission(
   userId: number,
   permissionId: number,
 ): Promise<void> {
-  const [result] = await pool.execute<ResultSetHeader>(`DELETE FROM sharing_permissions WHERE id = ? AND from_user_id = ?`, [
-    permissionId,
-    userId,
-  ])
-  if (result.affectedRows === 0)
-    throw new NotFoundError("Permission")
+  const [result] = await pool.execute<ResultSetHeader>(
+    `DELETE FROM sharing_permissions WHERE id = ? AND from_user_id = ?`,
+    [permissionId, userId],
+  )
+  if (result.affectedRows === 0) throw new NotFoundError("Permission")
 }
 
 /**
@@ -135,12 +135,7 @@ export async function getPermissions(
      WHERE sp.${self} = ? ORDER BY sp.permission_type, sp.created_at DESC LIMIT 500`,
     [userId],
   )
-  return rows.map((r) => ({
-    ...r,
-    payload: r.payload
-      ? (JSON.parse(r.payload) as Record<string, unknown>)
-      : null,
-  }))
+  return rows
 }
 
 /**
@@ -157,16 +152,13 @@ export async function getActiveTrainers(
   traineeId: number,
 ): Promise<TrainerGrantRow[]> {
   const [rows] = await pool.execute<TrainerGrantRow[]>(
-    // Requires a live friendship as well as the grant, matching
-    // getSessionWatchers — otherwise a stale grant keeps fanning out the
-    // trainee's live set events to someone they already unfriended.
+    // Requires a live friendship as well as the grant — otherwise a stale grant
+    // keeps fanning out the trainee's live set events to someone they already
+    // unfriended.
     `SELECT sp.to_user_id AS trainerId, u.username AS trainerUsername
      FROM sharing_permissions sp
      JOIN users u ON u.id = sp.to_user_id
-     JOIN friendships f
-       ON f.status = 'accepted'
-      AND ((f.user_id = sp.from_user_id AND f.friend_id = sp.to_user_id)
-        OR (f.user_id = sp.to_user_id AND f.friend_id = sp.from_user_id))
+     ${ACCEPTED_FRIENDSHIP_JOIN}
      WHERE sp.from_user_id = ? AND sp.permission_type = 'trainer'`,
     [traineeId],
   )
@@ -178,59 +170,59 @@ export async function hasPermission(
   toUserId: number,
   permissionType: PermissionType,
 ): Promise<boolean> {
-  const [rows] = await pool.execute<(RowDataPacket & { 1: number })[]>(
+  const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT 1 FROM sharing_permissions WHERE from_user_id = ? AND to_user_id = ? AND permission_type = ? LIMIT 1`,
     [fromUserId, toUserId, permissionType],
   )
   return rows.length > 0
 }
 
+// Muscle groups belong to the program day, not to the workout — same LEFT JOIN
+// the owner's own history uses, so a friend sees the same labels they do.
+const FRIEND_WORKOUT_COLS = `w.id, w.day_number AS dayNumber, w.day_title AS dayTitle,
+       w.start_time AS startTime, w.end_time AS endTime,
+       w.total_duration AS totalDuration, w.completed_sets AS completedSets,
+       pd.primary_muscles AS primaryMuscles,
+       pd.secondary_muscles AS secondaryMuscles
+     FROM workouts w LEFT JOIN program_days pd ON pd.id = w.program_day_id`
+
+const withMuscles = (w: FriendWorkoutRow) => ({
+  ...w,
+  primaryMuscles: parseMuscleGroups(w.primaryMuscles),
+  secondaryMuscles: parseMuscleGroups(w.secondaryMuscles),
+})
+
 export async function getFriendSessions(friendId: number, limit = 60) {
-  const [rows] = await pool.execute<FriendSessionRow[]>(
-    `SELECT s.id, s.day_number AS dayNumber, s.day_title AS dayTitle,
-            s.start_time AS startTime, s.end_time AS endTime,
-            s.total_duration AS totalDuration, s.completed_sets AS completedSets,
-            s.primary_muscles AS primaryMuscles, s.secondary_muscles AS secondaryMuscles
-     FROM sessions s WHERE s.user_id = ? ORDER BY s.start_time DESC LIMIT ?`,
+  const [rows] = await pool.execute<FriendWorkoutRow[]>(
+    `SELECT ${FRIEND_WORKOUT_COLS}
+     WHERE w.user_id = ? AND w.is_demo = 0 ORDER BY w.start_time DESC LIMIT ?`,
     [friendId, limit],
   )
-  return rows.map((s) => ({
-    ...s,
-    primaryMuscles: parseMuscleGroups(s.primaryMuscles),
-    secondaryMuscles: parseMuscleGroups(s.secondaryMuscles),
-  }))
+  return rows.map(withMuscles)
 }
 
 export async function getFriendSessionDetails(
   friendId: number,
   sessionId: number,
 ) {
-  const [rows] = await pool.execute<FriendSessionRow[]>(
-    `SELECT s.id, s.day_number AS dayNumber, s.day_title AS dayTitle,
-            s.start_time AS startTime, s.end_time AS endTime,
-            s.total_duration AS totalDuration, s.completed_sets AS completedSets,
-            s.primary_muscles AS primaryMuscles, s.secondary_muscles AS secondaryMuscles
-     FROM sessions s WHERE s.id = ? AND s.user_id = ?`,
+  const [rows] = await pool.execute<FriendWorkoutRow[]>(
+    `SELECT ${FRIEND_WORKOUT_COLS} WHERE w.id = ? AND w.user_id = ? AND w.is_demo = 0`,
     [sessionId, friendId],
   )
   if (!rows[0]) return null
-  const session = {
-    ...rows[0],
-    primaryMuscles: parseMuscleGroups(rows[0].primaryMuscles),
-    secondaryMuscles: parseMuscleGroups(rows[0].secondaryMuscles),
-  }
-  const [timings] = await pool.execute<RowDataPacket[]>(
-    `SELECT st.id, st.set_index AS setIndex, st.weight, st.reps,
-            st.set_duration AS setDuration, st.rest_time AS restTime,
-            st.machine_name AS machineName,
+
+  const [sets] = await pool.execute<RowDataPacket[]>(
+    `SELECT ws.id, ws.set_index AS setIndex, ws.weight, ws.reps,
+            ws.set_duration AS setDuration, ws.rest_time AS restTime,
+            ws.machine_name AS machineName, ws.rpe,
             e.name AS exerciseName,
             e.primary_muscles AS exercisePrimaryMuscles,
             e.secondary_muscles AS exerciseSecondaryMuscles
-     FROM set_timings st JOIN exercises e ON st.exercise_id = e.id
-     WHERE st.session_id = ? ORDER BY e.name ASC, st.set_index ASC`,
+     FROM workout_sets ws JOIN exercises e ON ws.exercise_id = e.id
+     WHERE ws.workout_id = ? ORDER BY e.name ASC, ws.set_index ASC`,
     [sessionId],
   )
-  return { ...session, setTimings: timings }
+  return { ...withMuscles(rows[0]), setTimings: sets }
 }
 
 export async function createJointInvite(
@@ -243,8 +235,8 @@ export async function createJointInvite(
     [fromUserId, toUserId],
   )
   const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO joint_session_invites (from_user_id, to_user_id, from_session_id, status, expires_at, created_at)
-     VALUES (?, ?, ?, 'pending', DATE_ADD(NOW(), INTERVAL ? SECOND), NOW())`,
+    `INSERT INTO joint_session_invites (from_user_id, to_user_id, from_workout_id, expires_at)
+     VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND))`,
     [fromUserId, toUserId, fromSessionId, INVITE_TTL_SECONDS],
   )
   return result.insertId
@@ -252,7 +244,7 @@ export async function createJointInvite(
 
 export async function getInvite(inviteId: number): Promise<InviteRow | null> {
   const [rows] = await pool.execute<InviteRow[]>(
-    `SELECT i.id, i.from_user_id, i.to_user_id, i.from_session_id, i.status, i.expires_at, i.created_at, u.username AS from_username
+    `SELECT i.id, i.from_user_id, i.to_user_id, i.from_workout_id, i.status, i.expires_at, i.created_at, u.username AS from_username
      FROM joint_session_invites i JOIN users u ON u.id = i.from_user_id WHERE i.id = ?`,
     [inviteId],
   )
@@ -279,28 +271,26 @@ export async function acceptInvite(
       `UPDATE joint_session_invites SET status = 'accepted' WHERE id = ?`,
       [inviteId],
     )
+    // created_by is what gives this table a foreign key: the session row
+    // cascades away with the inviter instead of being swept up later.
     const [jsResult] = await conn.execute<ResultSetHeader>(
-      `INSERT INTO joint_sessions (status, created_at) VALUES ('active', NOW())`,
+      `INSERT INTO joint_sessions (created_by) VALUES (?)`,
+      [invite.from_user_id],
     )
     const jointSessionId = jsResult.insertId
 
-    const [users] = await conn.execute<RowDataPacket[]>(
-      `SELECT id, username FROM users WHERE id IN (?, ?)`,
-      [invite.from_user_id, acceptingUserId],
-    )
-    const usernameMap = Object.fromEntries(users.map((u) => [u.id, u.username]))
-
+    // No username column: it is the same string as users.username and is
+    // joined in on read.
     await conn.execute(
-      `INSERT INTO joint_session_participants (joint_session_id, user_id, session_id, username) VALUES (?, ?, ?, ?), (?, ?, ?, ?)`,
+      `INSERT INTO joint_session_participants (joint_session_id, user_id, workout_id)
+       VALUES (?, ?, ?), (?, ?, ?)`,
       [
         jointSessionId,
         invite.from_user_id,
-        invite.from_session_id,
-        usernameMap[invite.from_user_id] ?? null,
+        invite.from_workout_id,
         jointSessionId,
         acceptingUserId,
         acceptingSessionId,
-        usernameMap[acceptingUserId] ?? null,
       ],
     )
     await conn.commit()
@@ -321,8 +311,7 @@ export async function declineInvite(
     `UPDATE joint_session_invites SET status = 'declined' WHERE id = ? AND to_user_id = ? AND status = 'pending'`,
     [inviteId, decliningUserId],
   )
-  if (result.affectedRows === 0)
-    throw new NotFoundError("Invite")
+  if (result.affectedRows === 0) throw new NotFoundError("Invite")
 }
 
 export async function getJointSession(
@@ -335,8 +324,16 @@ export async function getJointSession(
   if (!sessions[0]) return null
 
   const [participants] = await pool.execute<ParticipantRow[]>(
-    `SELECT user_id, session_id, username, exercise_index, set_index, exercise_name, ready_for_next, exercise_names, last_updated
-     FROM joint_session_participants WHERE joint_session_id = ?`,
+    // exerciseName is element exercise_index of the list, not a column of its
+    // own — one piece of state, read two ways.
+    `SELECT p.user_id AS userId, p.workout_id AS sessionId, u.username,
+            p.exercise_index AS exerciseIndex, p.set_index AS setIndex,
+            JSON_UNQUOTE(JSON_EXTRACT(p.exercise_names,
+              CONCAT('$[', p.exercise_index, ']'))) AS exerciseName,
+            p.ready_for_next AS readyForNext, p.exercise_names AS exerciseNames,
+            p.last_updated AS lastUpdated
+     FROM joint_session_participants p JOIN users u ON u.id = p.user_id
+     WHERE p.joint_session_id = ?`,
     [jointSessionId],
   )
 
@@ -345,19 +342,7 @@ export async function getJointSession(
     status: sessions[0].status,
     createdAt: sessions[0].created_at,
     participants: participants.map(
-      (p): JointSessionParticipant => ({
-        userId: p.user_id,
-        sessionId: p.session_id,
-        username: p.username,
-        exerciseIndex: p.exercise_index,
-        setIndex: p.set_index,
-        exerciseName: p.exercise_name,
-        readyForNext: !!p.ready_for_next,
-        exerciseNames: p.exercise_names
-          ? (JSON.parse(p.exercise_names) as string[])
-          : null,
-        lastUpdated: p.last_updated,
-      }),
+      (p): JointSessionParticipant => ({ ...p, readyForNext: !!p.readyForNext }),
     ),
   }
 }
@@ -367,20 +352,40 @@ export async function updateParticipantProgress(
   userId: number,
   progress: ParticipantProgress,
 ): Promise<void> {
+  // ck_jsp_index: both indices are >= 0 integers, and the columns are NOT NULL.
+  // Raw JSON from a socket (or a REST body) — non-numeric values become 0
+  // instead of a 1264/1366 error.
+  const cleanIndex = (v: unknown): number =>
+    typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : 0
+  const exerciseIndex = cleanIndex(progress.exerciseIndex)
+  const assignments = [
+    "exercise_index = ?",
+    "set_index = ?",
+    "ready_for_next = ?",
+  ]
+  const params: (string | number)[] = [
+    exerciseIndex,
+    cleanIndex(progress.setIndex),
+    progress.readyForNext ? 1 : 0,
+  ]
+
+  // A client that knows the whole day's list sends exerciseNames; one that only
+  // knows what it is doing right now sends exerciseName, which lands in its own
+  // slot (JSON_SET appends when the index is past the end).
+  if (progress.exerciseNames) {
+    assignments.push("exercise_names = CAST(? AS JSON)")
+    params.push(JSON.stringify(progress.exerciseNames))
+  } else if (progress.exerciseName) {
+    assignments.push(
+      "exercise_names = JSON_SET(exercise_names, CONCAT('$[', ?, ']'), ?)",
+    )
+    params.push(exerciseIndex, progress.exerciseName)
+  }
+
   const [result] = await pool.execute<ResultSetHeader>(
-    `UPDATE joint_session_participants
-     SET exercise_index = ?, set_index = ?, exercise_name = ?, ready_for_next = ?,
-         exercise_names = ?, last_updated = NOW()
+    `UPDATE joint_session_participants SET ${assignments.join(", ")}
      WHERE joint_session_id = ? AND user_id = ?`,
-    [
-      progress.exerciseIndex ?? null,
-      progress.setIndex ?? null,
-      progress.exerciseName ?? null,
-      progress.readyForNext ? 1 : 0,
-      progress.exerciseNames ? JSON.stringify(progress.exerciseNames) : null,
-      jointSessionId,
-      userId,
-    ],
+    [...params, jointSessionId, userId],
   )
   if (result.affectedRows === 0)
     throw new NotFoundError("Participant in this joint session")
@@ -390,30 +395,29 @@ export async function endJointSession(
   jointSessionId: number,
   userId: number,
 ): Promise<void> {
-  const [rows] = await pool.execute<(RowDataPacket & { 1: number })[]>(
+  const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT 1 FROM joint_session_participants WHERE joint_session_id = ? AND user_id = ?`,
     [jointSessionId, userId],
   )
   if (!rows[0]) throw new NotFoundError("Joint session participant")
-  await pool.execute(
-    `UPDATE joint_sessions SET status = 'ended' WHERE id = ?`,
-    [jointSessionId],
-  )
+  await pool.execute(`UPDATE joint_sessions SET status = 'ended' WHERE id = ?`, [
+    jointSessionId,
+  ])
 }
 
 /**
- * Returns whether the user has an active (non-ended) session.
+ * Returns whether the user has an active (non-ended) workout.
  * Pure read — does not mutate any rows.
  */
 export async function getUserActiveSessionStatus(
   userId: number,
 ): Promise<{ hasActiveSession: boolean; sessionId: number | null }> {
   const [rows] = await pool.execute<RowDataPacket[]>(
-    // end_time is not in idx_sessions_user_start, so with no active session —
-    // the normal state — this walked every session the user had ever logged
-    // before giving up. sessionCleanup ends anything idle >30min, so a session
-    // older than a day is always closed and this bound changes no behaviour.
-    `SELECT id FROM sessions
+    // end_time is not in idx_w_user_start, so with no active workout — the
+    // normal state — this walked every workout the user had ever logged before
+    // giving up. sessionCleanup ends anything idle >30min, so a workout older
+    // than a day is always closed and this bound changes no behaviour.
+    `SELECT id FROM workouts
      WHERE user_id = ? AND end_time IS NULL
        AND start_time > NOW() - INTERVAL 1 DAY
      ORDER BY start_time DESC LIMIT 1`,
@@ -422,24 +426,4 @@ export async function getUserActiveSessionStatus(
   return rows[0]
     ? { hasActiveSession: true, sessionId: rows[0].id }
     : { hasActiveSession: false, sessionId: null }
-}
-
-/**
- * joint_sessions is the one table with no user_id and no foreign key, so
- * deleting a user cascades away their joint_session_participants rows but
- * leaves the parent behind as an empty shell that accumulates forever. The
- * row holds nothing but status and created_at, so this is housekeeping rather
- * than a leak — but it is a one-statement fix on a table that is always tiny.
- *
- * Safe to run on a schedule: acceptInvite() inserts the joint_sessions row and
- * both participant rows in a single transaction, so a live session is never
- * briefly parentless.
- */
-export async function deleteOrphanedJointSessions(): Promise<number> {
-  const [result] = await pool.execute<ResultSetHeader>(
-    `DELETE js FROM joint_sessions js
-     LEFT JOIN joint_session_participants p ON p.joint_session_id = js.id
-     WHERE p.id IS NULL`,
-  )
-  return result.affectedRows
 }

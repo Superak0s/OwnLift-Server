@@ -1,27 +1,19 @@
 // Types shared across more than one tracking sub-feature. A type used by a
 // single feature lives in that feature's own model file instead.
 
-export interface WeightEntry {
-  id: number
-  weightKg: number
-  recordedAt: Date
-  note: string | null
-  createdAt: Date
-}
-
 export interface BodyFatEntry {
   id: number
   percentage: number
+  // The circumferences the percentage was derived from. They are also plain
+  // metric series of their own now; this block is kept because the app reads a
+  // body-fat entry as one object.
   measurements: {
     waist: number
     neck: number
     hip: number | null
-    height: number
     unit: string
   }
-  date: Date
-  method: string
-  gender: string
+  date: Date | string
 }
 
 export interface MacrosEntry {
@@ -32,9 +24,9 @@ export interface MacrosEntry {
   fat: number | null
   calories: number | null
   errorMargin: number
-  time: string
-  date: string
-  takenAt: Date
+  // No separate `time` field: `takenAt` is the one timestamp, formatted by the
+  // client in the viewer's locale rather than by the server in UTC.
+  takenAt: Date | string
   note: string | null
 }
 

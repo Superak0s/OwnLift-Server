@@ -4,7 +4,8 @@ interface UserProfile {
   username: string
   email: string
   name: string
-  gender: "male" | "female" | null
+  /** Which branch of the US-Navy body-fat formula to use. Not an identity field. */
+  bfFormulaSex: "male" | "female" | null
   height_cm: number | null
   height_unit: "cm" | "ft" | null
   weight_unit: "kg" | "lbs" | null
@@ -20,6 +21,6 @@ export type AuthUser = Pick<
 
 export interface UserBodyData {
   heightCm: number | null
-  gender: "male" | "female"
+  bfFormulaSex: "male" | "female"
   weightUnit: "kg" | "lbs"
 }

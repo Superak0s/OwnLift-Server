@@ -18,49 +18,50 @@ type BlockedUser = { id: number; username: string; name: string; blockedAt: Date
 // gets a bounded response.
 const PENDING_REQUESTS_LIMIT = 500
 
-
+/**
+ * One row per pair, stored canonically: user_id = LEAST(a,b),
+ * friend_id = GREATEST(a,b), with requested_by carrying the direction. That
+ * makes uq_friendship the mutual-exclusion primitive — two simultaneous A→B and
+ * B→A requests collide on the unique key instead of both passing a "no existing
+ * row" read, which is what the advisory GET_LOCK here used to be for.
+ */
 export async function sendFriendRequest(
   fromUserId: number,
   toUserId: number,
 ): Promise<number> {
-  // Normalized per-pair lock so A->B and B->A requests sent simultaneously
-  // can't both pass the "no existing row" check and create duplicate rows.
-  const lockKey = `friendship:${Math.min(fromUserId, toUserId)}:${Math.max(fromUserId, toUserId)}`
-  const conn = await pool.getConnection()
-  try {
-    await conn.query("SELECT GET_LOCK(?, 10)", [lockKey])
-    try {
-      const [blocks] = await conn.execute<RowDataPacket[]>(
-        `SELECT id FROM user_blocks WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?) LIMIT 1`,
-        [fromUserId, toUserId, toUserId, fromUserId],
-      )
-      // Deliberately the same message in both directions: telling the sender
-      // "they blocked you" would leak the block back to the person it protects
-      // the other user from.
-      if (blocks.length)
-        throw new ForbiddenError("Cannot send a friend request to this user")
+  const [blocks] = await pool.execute<RowDataPacket[]>(
+    `SELECT id FROM user_blocks
+     WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)
+     LIMIT 1`,
+    [fromUserId, toUserId, toUserId, fromUserId],
+  )
+  // Deliberately the same message in both directions: telling the sender
+  // "they blocked you" would leak the block back to the person it protects
+  // the other user from.
+  if (blocks.length)
+    throw new ForbiddenError("Cannot send a friend request to this user")
 
-      const [existing] = await conn.execute<RowDataPacket[]>(
-        `SELECT id, status FROM friendships WHERE (user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)`,
-        [fromUserId, toUserId, toUserId, fromUserId],
-      )
-      if (existing[0]) {
-        if (existing[0].status === "pending")
-          throw new ConflictError("Friend request already pending")
-        if (existing[0].status === "accepted")
-          throw new ConflictError("Already friends")
-      }
-      const [result] = await conn.execute<ResultSetHeader>(
-        `INSERT INTO friendships (user_id, friend_id, status, created_at) VALUES (?, ?, 'pending', NOW())`,
-        [fromUserId, toUserId],
-      )
-      return result.insertId
-    } finally {
-      await conn.query("SELECT RELEASE_LOCK(?)", [lockKey])
-    }
-  } finally {
-    conn.release()
+  try {
+    const [result] = await pool.execute<ResultSetHeader>(
+      `INSERT INTO friendships (user_id, friend_id, requested_by)
+       VALUES (LEAST(?, ?), GREATEST(?, ?), ?)`,
+      [fromUserId, toUserId, fromUserId, toUserId, fromUserId],
+    )
+    return result.insertId
+  } catch (err) {
+    if ((err as { code?: string }).code !== "ER_DUP_ENTRY") throw err
   }
+
+  const [existing] = await pool.execute<RowDataPacket[]>(
+    `SELECT status FROM friendships
+     WHERE user_id = LEAST(?, ?) AND friend_id = GREATEST(?, ?)`,
+    [fromUserId, toUserId, fromUserId, toUserId],
+  )
+  throw new ConflictError(
+    existing[0]?.status === "accepted"
+      ? "Already friends"
+      : "Friend request already pending",
+  )
 }
 
 export async function acceptFriendRequest(
@@ -68,11 +69,14 @@ export async function acceptFriendRequest(
   friendshipId: number,
 ): Promise<boolean> {
   const [result] = await pool.execute<ResultSetHeader>(
-    `UPDATE friendships SET status = 'accepted', accepted_at = NOW() WHERE id = ? AND friend_id = ? AND status = 'pending'`,
-    [friendshipId, userId],
+    // Either column may hold the caller now, so the recipient is defined as
+    // "in this pair, and not the one who asked".
+    `UPDATE friendships SET status = 'accepted', accepted_at = NOW()
+     WHERE id = ? AND ? IN (user_id, friend_id) AND requested_by <> ?
+       AND status = 'pending'`,
+    [friendshipId, userId, userId],
   )
-  if (result.affectedRows === 0)
-    throw new NotFoundError("Friend request")
+  if (result.affectedRows === 0) throw new NotFoundError("Friend request")
   return true
 }
 
@@ -81,11 +85,12 @@ export async function rejectFriendRequest(
   friendshipId: number,
 ): Promise<boolean> {
   const [result] = await pool.execute<ResultSetHeader>(
-    `DELETE FROM friendships WHERE id = ? AND friend_id = ? AND status = 'pending'`,
-    [friendshipId, userId],
+    `DELETE FROM friendships
+     WHERE id = ? AND ? IN (user_id, friend_id) AND requested_by <> ?
+       AND status = 'pending'`,
+    [friendshipId, userId, userId],
   )
-  if (result.affectedRows === 0)
-    throw new NotFoundError("Friend request")
+  if (result.affectedRows === 0) throw new NotFoundError("Friend request")
   return true
 }
 
@@ -106,8 +111,10 @@ export async function removeFriend(
   try {
     await conn.beginTransaction()
     const [result] = await conn.execute<ResultSetHeader>(
-      `DELETE FROM friendships WHERE ((user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)) AND status = 'accepted'`,
-      [userId, friendId, friendId, userId],
+      `DELETE FROM friendships
+       WHERE user_id = LEAST(?, ?) AND friend_id = GREATEST(?, ?)
+         AND status = 'accepted'`,
+      [userId, friendId, userId, friendId],
     )
     if (result.affectedRows === 0) {
       await conn.rollback()
@@ -129,15 +136,15 @@ export async function removeFriend(
 
 export async function getFriends(userId: number): Promise<Friend[]> {
   const [rows] = await pool.execute<(Friend & RowDataPacket)[]>(
+    // The pair is ordered, so "the other one" is one IF and one join rather
+    // than a CASE over two copies of the users table.
     `SELECT f.id AS friendshipId, f.created_at AS friendsSince,
-       CASE WHEN f.user_id = ? THEN f.friend_id ELSE f.user_id END AS friendUserId,
-       CASE WHEN f.user_id = ? THEN u2.username ELSE u1.username END AS username,
-       CASE WHEN f.user_id = ? THEN u2.name ELSE u1.name END AS name
+            u.id AS friendUserId, u.username, u.name
      FROM friendships f
-     JOIN users u1 ON f.user_id = u1.id JOIN users u2 ON f.friend_id = u2.id
-     WHERE (f.user_id = ? OR f.friend_id = ?) AND f.status = 'accepted'
+     JOIN users u ON u.id = IF(f.user_id = ?, f.friend_id, f.user_id)
+     WHERE ? IN (f.user_id, f.friend_id) AND f.status = 'accepted'
      ORDER BY f.accepted_at DESC LIMIT 500`,
-    [userId, userId, userId, userId, userId],
+    [userId, userId],
   )
   return rows
 }
@@ -146,10 +153,14 @@ export async function getPendingRequests(
   userId: number,
 ): Promise<FriendRequest[]> {
   const [rows] = await pool.execute<(FriendRequest & RowDataPacket)[]>(
-    `SELECT f.id AS friendshipId, f.user_id AS userId, f.created_at AS createdAt, u.username, u.name
-     FROM friendships f JOIN users u ON f.user_id = u.id
-     WHERE f.friend_id = ? AND f.status = 'pending' ORDER BY f.created_at DESC LIMIT ?`,
-    [userId, PENDING_REQUESTS_LIMIT],
+    // Incoming: someone else asked, and the caller is the other half of the pair.
+    `SELECT f.id AS friendshipId, f.requested_by AS userId,
+            f.created_at AS createdAt, u.username, u.name
+     FROM friendships f JOIN users u ON u.id = f.requested_by
+     WHERE ? IN (f.user_id, f.friend_id) AND f.requested_by <> ?
+       AND f.status = 'pending'
+     ORDER BY f.created_at DESC LIMIT ?`,
+    [userId, userId, PENDING_REQUESTS_LIMIT],
   )
   return rows
 }
@@ -158,10 +169,14 @@ export async function getSentRequests(
   userId: number,
 ): Promise<FriendRequest[]> {
   const [rows] = await pool.execute<(FriendRequest & RowDataPacket)[]>(
-    `SELECT f.id AS friendshipId, f.friend_id AS friendId, f.created_at AS createdAt, u.username, u.name
-     FROM friendships f JOIN users u ON f.friend_id = u.id
-     WHERE f.user_id = ? AND f.status = 'pending' ORDER BY f.created_at DESC LIMIT ?`,
-    [userId, PENDING_REQUESTS_LIMIT],
+    `SELECT f.id AS friendshipId,
+            IF(f.user_id = ?, f.friend_id, f.user_id) AS friendId,
+            f.created_at AS createdAt, u.username, u.name
+     FROM friendships f
+     JOIN users u ON u.id = IF(f.user_id = ?, f.friend_id, f.user_id)
+     WHERE f.requested_by = ? AND f.status = 'pending'
+     ORDER BY f.created_at DESC LIMIT ?`,
+    [userId, userId, userId, PENDING_REQUESTS_LIMIT],
   )
   return rows
 }
@@ -171,8 +186,10 @@ export async function areFriends(
   userId2: number,
 ): Promise<boolean> {
   const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT id FROM friendships WHERE ((user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)) AND status = 'accepted'`,
-    [userId1, userId2, userId2, userId1],
+    `SELECT id FROM friendships
+     WHERE user_id = LEAST(?, ?) AND friend_id = GREATEST(?, ?)
+       AND status = 'accepted'`,
+    [userId1, userId2, userId1, userId2],
   )
   return rows.length > 0
 }
@@ -197,13 +214,14 @@ export async function searchUsers(
   const [rows] = await pool.execute<(UserSearchResult & RowDataPacket)[]>(
     `SELECT u.id, u.username, u.name,
        CASE
-         WHEN f.id IS NOT NULL AND f.status = 'accepted' THEN 'friend'
-         WHEN f.id IS NOT NULL AND f.status = 'pending' AND f.user_id = ? THEN 'request_sent'
-         WHEN f.id IS NOT NULL AND f.status = 'pending' AND f.friend_id = ? THEN 'request_received'
+         WHEN f.status = 'accepted' THEN 'friend'
+         WHEN f.status = 'pending' AND f.requested_by = ? THEN 'request_sent'
+         WHEN f.status = 'pending' THEN 'request_received'
          ELSE 'none'
        END AS friendshipStatus
      FROM users u
-     LEFT JOIN friendships f ON ((f.user_id = ? AND f.friend_id = u.id) OR (f.user_id = u.id AND f.friend_id = ?))
+     LEFT JOIN friendships f
+       ON f.user_id = LEAST(?, u.id) AND f.friend_id = GREATEST(?, u.id)
      WHERE (u.username LIKE ? OR u.name LIKE ?) AND u.id != ?
        AND NOT EXISTS (
          SELECT 1 FROM user_blocks b
@@ -212,7 +230,6 @@ export async function searchUsers(
        )
      LIMIT ?`,
     [
-      currentUserId,
       currentUserId,
       currentUserId,
       currentUserId,
@@ -251,12 +268,13 @@ export async function blockUser(
   try {
     await conn.beginTransaction()
     await conn.execute(
-      `INSERT IGNORE INTO user_blocks (blocker_id, blocked_id, created_at) VALUES (?, ?, NOW())`,
+      `INSERT IGNORE INTO user_blocks (blocker_id, blocked_id) VALUES (?, ?)`,
       [blockerId, blockedId],
     )
     await conn.execute(
-      `DELETE FROM friendships WHERE (user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)`,
-      [blockerId, blockedId, blockedId, blockerId],
+      `DELETE FROM friendships
+       WHERE user_id = LEAST(?, ?) AND friend_id = GREATEST(?, ?)`,
+      [blockerId, blockedId, blockerId, blockedId],
     )
     await conn.execute(
       `DELETE FROM sharing_permissions WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)`,
@@ -316,7 +334,7 @@ export async function reportUser(
     throw new ValidationError("Cannot report yourself")
   }
   const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO user_reports (reporter_id, reported_id, reason, details, created_at) VALUES (?, ?, ?, ?, NOW())`,
+    `INSERT INTO user_reports (reporter_id, reported_id, reason, details) VALUES (?, ?, ?, ?)`,
     [reporterId, reportedId, reason, details?.slice(0, 1000) || null],
   )
   return result.insertId

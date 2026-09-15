@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
 import { applyTrainerContext, denyTrainer } from "@/middleware/trainerContext.js"
-import { ForbiddenError, ValidationError } from "@/middleware/errorHandler.js"
+import { ValidationError } from "@/middleware/errorHandler.js"
 import {
   parseIntParam,
   queryLimit,
@@ -22,25 +22,12 @@ import {
   getSessionHistory,
   deleteAllSessionsForSplit,
   deleteDemoSessions,
-  updateSessionSplit,
 } from "./workouts.model.js"
 import { getActiveTrainers } from "../social/sharing/sharing.model.js"
 
 const router: Router = Router()
 
 router.use(authenticateToken, applyTrainerContext)
-
-async function requireOwnSession(
-  sessionId: number,
-  userId: number,
-): Promise<void> {
-  const [rows] = await pool.execute<any[]>(
-    "SELECT id FROM sessions WHERE id = ? AND user_id = ?",
-    [sessionId, userId],
-  )
-  if (rows.length === 0)
-    throw new ForbiddenError("Session not found or unauthorized")
-}
 
 router.get("/", async (req: Request, res: Response) => {
   const userId = req.user!.id
@@ -62,27 +49,26 @@ router.get("/", async (req: Request, res: Response) => {
     withTimings,
   )
 
-  res.json({ success: true, sessions, total: sessions.length })
+  // No `total`: it was sessions.length, which a client can read off the array
+  // itself, and it read like a full-history count that it never was.
+  res.json({ success: true, sessions })
 })
 
 router.post("/start", validateSessionCreation, async (req: Request, res: Response) => {
   const userId = req.user!.id
-  const { dayNumber, dayTitle, primaryMuscles, secondaryMuscles } = req.body
-  const split = req.body.split
+  const { dayNumber, dayTitle } = req.body
 
+  // primaryMuscles/secondaryMuscles in the body are ignored: a workout's muscle
+  // labels are read through its program_day_id so that editing a program day
+  // relabels its history instead of leaving stale copies on every workout row.
   const newSessionId: number = await createSession(
     userId,
     dayNumber,
     dayTitle,
-    primaryMuscles ?? [],
-    secondaryMuscles ?? [],
     req.body.startTime || null,
     req.body.isDemo === true,
+    req.body.split || null,
   )
-
-  if (split) {
-    await updateSessionSplit(newSessionId, userId, split)
-  }
 
   const session = await getSessionDetails(newSessionId, userId)
 
@@ -146,10 +132,10 @@ router.post("/:sessionId/set", validateRequired(["exerciseName", "setIndex", "st
     rpe,
   } = req.body
 
-  await requireOwnSession(sessionId, userId)
-
+  // Ownership is enforced inside recordSetTiming's transaction.
   const timing = await recordSetTiming(
     sessionId,
+    userId,
     exerciseName.trim(),
     setIndex,
     startTime,
@@ -225,8 +211,7 @@ router.post("/:sessionId/end", async (req: Request, res: Response) => {
   const userId = req.user!.id
   const sessionId = parseIntParam(String(req.params.sessionId), "session ID")
 
-  await requireOwnSession(sessionId, userId)
-  const session = await endSession(sessionId, req.body.endTime || null)
+  const session = await endSession(sessionId, userId, req.body.endTime || null)
 
   pushSessionStatusToWatchers(
     userId,
@@ -297,8 +282,8 @@ async function getSessionWatchers(userId: number): Promise<{ to_user_id: number 
     `SELECT sp.to_user_id
      FROM sharing_permissions sp
      JOIN friendships f
-       ON (  (f.user_id = sp.from_user_id AND f.friend_id = sp.to_user_id)
-          OR (f.user_id = sp.to_user_id   AND f.friend_id = sp.from_user_id) )
+       ON f.user_id = LEAST(sp.from_user_id, sp.to_user_id)
+      AND f.friend_id = GREATEST(sp.from_user_id, sp.to_user_id)
      WHERE sp.from_user_id = ? AND sp.permission_type = 'watch_session'
        AND f.status = 'accepted'`,
     [userId],

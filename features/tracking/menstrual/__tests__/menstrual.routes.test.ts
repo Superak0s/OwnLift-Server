@@ -16,7 +16,8 @@ describe("menstrual routes", () => {
       .set(auth(u.token))
       .send({ cycleStart: "2024-05-01", symptoms: ["cramps"] })
     expect(res.status).toBe(201)
-    entryId = res.body.id
+    expect(res.body.data.symptoms).toEqual(["cramps"])
+    entryId = res.body.data.id
   })
 
   it("lists history and stats", async () => {
@@ -27,24 +28,41 @@ describe("menstrual routes", () => {
     expect(stats.status).toBe(200)
   })
 
-  it("updates settings with validation", async () => {
-    const bad = await request(app)
-      .post("/api/tracking/menstrual/settings")
+  it("closes a cycle with PATCH", async () => {
+    const patched = await request(app)
+      .patch(`/api/tracking/menstrual/${entryId}`)
       .set(auth(u.token))
-      .send({ periodDays: 0 })
+      .send({ cycleEnd: "2024-05-05", symptoms: ["cramps", "fatigue"] })
+    expect(patched.status).toBe(200)
+    expect(patched.body.data.cycleEnd).toContain("2024-05-05")
+    expect(patched.body.data.symptoms).toEqual(["cramps", "fatigue"])
+  })
+
+  // Period and cycle length are /api/settings keys now, not a menstrual route.
+  it("updates cycle settings with validation", async () => {
+    const bad = await request(app)
+      .patch("/api/settings")
+      .set(auth(u.token))
+      .send({ cyclePeriodDays: 0 })
     expect(bad.status).toBe(400)
 
-    const ok = await request(app)
-      .post("/api/tracking/menstrual/settings")
+    const tooLong = await request(app)
+      .patch("/api/settings")
       .set(auth(u.token))
-      .send({ periodDays: 5, cycleLengthDays: 28 })
+      .send({ cyclePeriodDays: 40, cycleLengthDays: 28 })
+    expect(tooLong.status).toBe(400)
+
+    const ok = await request(app)
+      .patch("/api/settings")
+      .set(auth(u.token))
+      .send({ cyclePeriodDays: 5, cycleLengthDays: 28 })
     expect(ok.status).toBe(200)
+    expect(ok.body.data.cyclePeriodDays).toBe(5)
   })
 
   it("deletes entries", async () => {
     const del = await request(app).delete(`/api/tracking/menstrual/${entryId}`).set(auth(u.token))
     expect(del.status).toBe(200)
-    expect(typeof del.body.removedPredictions).toBe("boolean")
 
     const again = await request(app).delete(`/api/tracking/menstrual/${entryId}`).set(auth(u.token))
     expect(again.status).toBe(404)

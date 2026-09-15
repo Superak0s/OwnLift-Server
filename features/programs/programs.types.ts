@@ -41,11 +41,6 @@ interface ExerciseWithSets {
   setsBySplit: Record<string, number>
 }
 
-interface SplitColumn {
-  index: number
-  name: string
-}
-
 export interface SplitWorkout {
   exercises: Exercise[]
   totalSets: number
@@ -60,8 +55,6 @@ export interface ProgramDay {
   exercises: ExerciseWithSets[]
   /** Per-split exercise lists — used at runtime. */
   split: Record<string, SplitWorkout>
-  /** Transient: only present in parser output, stripped before DB storage. */
-  splitColumns?: SplitColumn[]
 }
 
 export interface ProgramData {
@@ -72,5 +65,6 @@ export interface ProgramData {
 export interface StoredProgram {
   programData: ProgramData
   originalFilename: string
-  uploadedAt: Date
+  // dateStrings on the pool: DATETIME columns arrive as strings, not Dates.
+  uploadedAt: string
 }

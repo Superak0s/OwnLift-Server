@@ -65,17 +65,23 @@ All routes are under `/api` and require a JWT `Authorization: Bearer <token>` un
 
 ### Tracking — `/api/tracking/*`
 
-- **`bodystats`** — weight log & stats, height/unit prefs, body-fat logging + US-Navy calculation.
-- **`macros`** — intake logging, daily/weekly/monthly summaries, goals.
+- **`bodystats`** — weight log & stats, body-fat logging + US-Navy calculation.
+- **`measurements`** — every scalar metric, built-in or user-defined: `POST /` (a map of metric → value), `GET /?metrics=a,b`, `GET /:metric/history`, `GET`/`POST /definitions`, `DELETE /:id`.
+- **`hydration`**, **`soreness`**, **`menstrual`**, **`injuries`**, **`personal-notes`** — one router each.
+- **`macros`** — intake logging and daily/weekly/monthly summaries. Goals live in `/api/settings`.
 - **`supplements`** — CRUD, intake logging + streaks.
-- **`photos`** — general body photos: upload (multer memory, image only, 10 MB, magic-byte checked), list, fetch raw bytes, delete. `photos/muscle` is the muscle-tagged variant: upload (multer memory, image only, 10 MB, magic-byte checked), list, list by muscle, fetch raw bytes, delete. Stored as LONGBLOB with muscle-group tags.
+- **`photos/muscle`** — upload (multer memory, image only, 10 MB, magic-byte checked), list, list by muscle, fetch raw bytes, delete. Stored as LONGBLOB with muscle-group tags.
+
+### Settings — `/api/settings`
+
+`GET /` · `PATCH /` — every user preference in one place: hydration goal and error margin, cycle period/length, macro goals. Ranges are `CHECK` constraints in the schema; a violation comes back as a 400.
 
 ### Social — `/api/friends` & `/api/sharing`
 
 - **Friends:** search, list, pending/sent requests, request/accept/reject/remove, privacy-preserving contact matching (SHA-256 hashed emails).
 - **Blocking:** `POST`/`DELETE /api/friends/block/:userId` and `GET /api/friends/blocked`. A block tears down the friendship, every sharing permission in both directions, and any outstanding joint invite, then hides each user from the other's search and blocks new requests.
 - **Reporting:** `POST /api/friends/report` (`userId`, `reason`, optional `details`). There is no central moderator for a self-hosted deployment, so reports are stored on the instance for its operator to review with `pnpm ownlift reports`.
-- **Sharing permissions:** grant/revoke access by type — `history`, `analytics`, `program`, `joint_session`, `watch_session`.
+- **Sharing permissions:** grant/revoke access by type — `history`, `analytics`, `program`, `joint_session`, `watch_session`, `trainer`.
 - **Joint sessions:** invite, accept/decline, live progress push, leave — two friends working out in sync.
 - **Watch sessions:** spectate a friend's active live session.
 
@@ -103,14 +109,16 @@ Mounted on the same HTTP server. Auth via a JWT `auth` message sent over the soc
 SQL tables (`config/schema.sql`):
 
 - **users** — accounts, profile, admin flag, height/weight-unit prefs.
-- **exercises** — global exercise catalog.
-- **sessions** / **set_timings** — workout sessions and individual sets (weight, reps, timing, rest, warm-up).
-- **workout_programs** — one program per user (JSON).
-- **body_weight** / **body_fat_measurements** — body tracking.
-- **supplements** / **supplement_log** — supplement definitions and intake.
-- **progress_photos_muscle** (+ **_tags**) — image BLOBs, metadata and muscle-group tags.
-- **macros_goals** / **macros_intake** — nutrition.
-- **friendships** — friend relationships & status.
+- **user_settings** — one row per user holding every preference: hydration goal, cycle lengths, macro goals. Replaced three one-row-per-user settings tables.
+- **exercises** — global exercise catalog, unique on name.
+- **programs** / **program_days** / **program_exercises** — one program per user, relational rather than a JSON blob. A day keeps its id across re-uploads so workout history keeps its muscle labels.
+- **workouts** / **workout_sets** — workout sessions and individual sets (weight, reps, RPE, timing, rest, warm-up).
+- **measurements** / **metric_definitions** — every scalar body metric as `(metric, value, measured_at)` rows: weight, body fat, circumferences, hydration, and any metric the user defines. Replaced `body_weight`, `body_fat_measurements`, `body_measurements` and the custom-measurement pair.
+- **soreness** / **soreness_follow_up** — a soreness episode and its check-ins. Replaced the parallel `doms_*` tables.
+- **menstrual_cycle** · **injuries** · **muscle_notes** · **macros_intake** — one table each, all `user_id`-owned.
+- **supplements** / **supplement_intake** — supplement definitions and intake.
+- **progress_photos** (+ **_blobs**, **_muscles**) — metadata, image bytes in their own table, and muscle-group tags.
+- **friendships** — one row per pair, stored with `user_id < friend_id` and a `requested_by` column, so a duplicate request is a UNIQUE violation rather than a race.
 - **sharing_permissions** — per-friend access grants.
 - **joint_sessions** / **joint_session_participants** / **joint_session_invites** — synchronized co-workouts.
 
@@ -137,6 +145,7 @@ Set these environment variables. A `.env` file is read by Node directly — the 
 | `SERVER_FQDN`     | no       | —           | Public domain name; advertised over mDNS (`_ownlift._tcp`) so clients that find this server on the LAN can connect via this FQDN instead of the raw IP |
 | `RATE_LIMIT_BYPASS_LOCAL_IPS` | no | `false` | `true` skips the rate limiters for loopback/private-range client IPs (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) |
 | `TRUST_PROXY_HOPS` | no | `0` | Number of trusted reverse-proxy hops in front of the server. **Set this to `1` if you run behind nginx/Caddy/Traefik**, or the rate limiters will key every client into one shared bucket. Leave at `0` when the container's port is exposed directly |
+| `LOCAL_ONLY_FEATURES` | no | — | Comma-separated features this deployment refuses to store, to save disk: `tracking`, `supplements`. Their routes are not mounted (404) and the list is published on `GET /healthz`, which the app reads to keep those features logging on-device instead |
 
 > ⚠️ **Security:** do not commit real secrets. Rotate any credentials that have been checked into `.env`, and keep `.env` out of version control.
 
