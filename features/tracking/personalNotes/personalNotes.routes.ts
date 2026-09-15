@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
+import { queryLimit } from "@/middleware/validation.js"
 import {
   createNote,
   getNotesByMuscle,
@@ -17,7 +18,11 @@ router.post("/", async (req: Request, res: Response) => {
 
 router.get("/muscle/:muscleGroup", async (req: Request, res: Response) => {
   const muscleGroup = String(req.params.muscleGroup)
-  const notes = await getNotesByMuscle(req.user!.id, muscleGroup)
+  const notes = await getNotesByMuscle(
+    req.user!.id,
+    muscleGroup,
+    queryLimit(req, { def: 100, max: 500 }),
+  )
   res.json({ success: true, data: notes })
 })
 

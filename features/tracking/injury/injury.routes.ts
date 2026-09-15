@@ -1,8 +1,7 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
-import {
-  ValidationError,
-} from "@/middleware/errorHandler.js"
+import { ValidationError } from "@/middleware/errorHandler.js"
+import { queryLimit } from "@/middleware/validation.js"
 import {
   logInjury,
   getAllInjuries,
@@ -11,6 +10,9 @@ import {
 } from "./injury.model.js"
 
 const router: Router = Router()
+
+/** Injury lists were unbounded; a client that wants more asks with ?limit=. */
+const LIST_LIMIT = (req: Request) => queryLimit(req, { def: 100, max: 500 })
 
 router.use(authenticateToken)
 
@@ -33,18 +35,18 @@ router.post("/", async (req: Request, res: Response) => {
 })
 
 router.get("/", async (req: Request, res: Response) => {
-  const injuries = await getAllInjuries(req.user!.id)
+  const injuries = await getAllInjuries(req.user!.id, LIST_LIMIT(req))
   res.json({ success: true, data: injuries })
 })
 
 router.get("/muscle/:muscle", async (req: Request, res: Response) => {
   const muscle = String(req.params.muscle)
-  const injuries = await getInjuriesByMuscle(req.user!.id, muscle)
+  const injuries = await getInjuriesByMuscle(req.user!.id, muscle, LIST_LIMIT(req))
   res.json({ success: true, data: injuries })
 })
 
 router.get("/active", async (req: Request, res: Response) => {
-  const injuries = await getActiveInjuries(req.user!.id)
+  const injuries = await getActiveInjuries(req.user!.id, LIST_LIMIT(req))
   res.json({ success: true, data: injuries })
 })
 

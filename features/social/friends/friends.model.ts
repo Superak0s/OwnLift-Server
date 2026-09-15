@@ -1,5 +1,4 @@
 import { pool } from "@/config/database.js"
-import crypto from "crypto"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
 import {
   NotFoundError,
@@ -90,17 +89,42 @@ export async function rejectFriendRequest(
   return true
 }
 
+/**
+ * Unfriending must tear down the access grants too, not just the friendship
+ * row. Sharing routes pair areFriends + hasPermission so they fail closed on
+ * their own, but a `trainer` grant is read/write against the trainee's
+ * sessions, program and analytics — leaving the row behind meant an unfriended
+ * trainer kept full access, and only blockUser actually revoked it. Both
+ * deletes go in one transaction so access can't survive a half-applied
+ * teardown.
+ */
 export async function removeFriend(
   userId: number,
   friendId: number,
 ): Promise<boolean> {
-  const [result] = await pool.execute<ResultSetHeader>(
-    `DELETE FROM friendships WHERE ((user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)) AND status = 'accepted'`,
-    [userId, friendId, friendId, userId],
-  )
-  if (result.affectedRows === 0)
-    throw new NotFoundError("Friendship")
-  return true
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    const [result] = await conn.execute<ResultSetHeader>(
+      `DELETE FROM friendships WHERE ((user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)) AND status = 'accepted'`,
+      [userId, friendId, friendId, userId],
+    )
+    if (result.affectedRows === 0) {
+      await conn.rollback()
+      throw new NotFoundError("Friendship")
+    }
+    await conn.execute(
+      `DELETE FROM sharing_permissions WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)`,
+      [userId, friendId, friendId, userId],
+    )
+    await conn.commit()
+    return true
+  } catch (err) {
+    if (!(err instanceof NotFoundError)) await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
 }
 
 export async function getFriends(userId: number): Promise<Friend[]> {
@@ -153,82 +177,6 @@ export async function areFriends(
   return rows.length > 0
 }
 
-interface ContactSuggestion {
-  id: number
-  username: string
-  name: string
-}
-
-interface EmailRow extends RowDataPacket {
-  id: number
-  username: string
-  name: string
-  email: string
-}
-
-/**
- * Hash an email the same way the client does (normalized, SHA-256, hex),
- * so we never need to store or transmit anyone's raw email for this feature.
- */
-function hashEmail(email: string): string {
-  return crypto
-    .createHash("sha256")
-    .update(email.trim().toLowerCase())
-    .digest("hex")
-}
-
-/**
- * Given a set of SHA-256 email hashes from the caller's phone contacts,
- * returns app users whose email hashes to one of those values — excluding
- * the caller themself and anyone they already have a friendship row with
- * (accepted, pending, sent, or received — any status).
- *
- * We only ever compare hashes; no email in the submitted set is ever
- * needed or stored on our side beyond this request.
- */
-export async function findFriendSuggestionsByEmailHashes(
-  currentUserId: number,
-  emailHashes: string[],
-): Promise<ContactSuggestion[]> {
-  if (!emailHashes.length) return []
-
-  const hashSet = new Set(emailHashes.map((h) => h.toLowerCase()))
-
-  const [rows] = await pool.execute<EmailRow[]>(
-    `SELECT u.id, u.username, u.name, u.email
-     FROM users u
-     WHERE u.id != ?
-       AND u.email IS NOT NULL
-       AND u.id NOT IN (
-         SELECT CASE WHEN f.user_id = ? THEN f.friend_id ELSE f.user_id END
-         FROM friendships f
-         WHERE f.user_id = ? OR f.friend_id = ?
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM user_blocks b
-         WHERE (b.blocker_id = ? AND b.blocked_id = u.id)
-            OR (b.blocker_id = u.id AND b.blocked_id = ?)
-       )`,
-    [
-      currentUserId,
-      currentUserId,
-      currentUserId,
-      currentUserId,
-      currentUserId,
-      currentUserId,
-    ],
-  )
-
-  const matches: ContactSuggestion[] = []
-  for (const row of rows) {
-    if (!row.email) continue
-    if (hashSet.has(hashEmail(row.email))) {
-      matches.push({ id: row.id, username: row.username, name: row.name })
-    }
-  }
-  return matches
-}
-
 export async function searchUsers(
   searchTerm: string,
   currentUserId: number,
@@ -239,6 +187,12 @@ export async function searchUsers(
     throw new ValidationError("Search term must be at least 2 characters")
   if (searchTerm.length > 50)
     throw new ValidationError("Search term must not exceed 50 characters")
+
+  // The term is bound as a parameter, so this was never injectable — but it
+  // is bound *inside* LIKE wildcards, so an unescaped % or _ is still a
+  // pattern. `?q=%%` matched every row and dumped the instance's whole member
+  // roster (username + real name) to any signed-in user.
+  const pattern = `%${searchTerm.replace(/[\\%_]/g, "\\$&")}%`
 
   const [rows] = await pool.execute<(UserSearchResult & RowDataPacket)[]>(
     `SELECT u.id, u.username, u.name,
@@ -262,8 +216,8 @@ export async function searchUsers(
       currentUserId,
       currentUserId,
       currentUserId,
-      `%${searchTerm}%`,
-      `%${searchTerm}%`,
+      pattern,
+      pattern,
       currentUserId,
       currentUserId,
       currentUserId,

@@ -13,8 +13,7 @@ import {
 import {
   grantPermission,
   revokePermission,
-  getGrantedPermissions,
-  getReceivedPermissions,
+  getPermissions,
   hasPermission,
   getFriendSessions,
   getFriendSessionDetails,
@@ -31,6 +30,22 @@ import { areFriends } from "../friends/friends.model.js"
 import { queryLimit, parseIntParam } from "@/middleware/validation.js"
 
 const router: Router = Router()
+
+/**
+ * The friendship check and the permission check are independent reads, so run
+ * them together — every friend-scoped route below used to pay two serial round
+ * trips before it started doing any actual work. Callers keep their own
+ * wording for the two failures.
+ */
+const friendAccess = (
+  viewerId: number,
+  friendId: number,
+  permission: "history" | "watch_session",
+) =>
+  Promise.all([
+    areFriends(viewerId, friendId),
+    hasPermission(friendId, viewerId, permission),
+  ])
 
 router.use(authenticateToken)
 
@@ -65,12 +80,12 @@ router.post("/permissions", async (req: Request, res: Response) => {
 })
 
 router.get("/permissions/granted", async (req: Request, res: Response) => {
-  const permissions = await getGrantedPermissions(req.user!.id)
+  const permissions = await getPermissions(req.user!.id, "granted")
   res.json({ success: true, permissions, count: permissions.length })
 })
 
 router.get("/permissions/received", async (req: Request, res: Response) => {
-  const permissions = await getReceivedPermissions(req.user!.id)
+  const permissions = await getPermissions(req.user!.id, "received")
   res.json({ success: true, permissions, count: permissions.length })
 })
 
@@ -84,9 +99,9 @@ router.get("/sessions/friend/:friendId", async (req: Request, res: Response) => 
   const friendId = parseIntParam(String(req.params.friendId), "friendId")
   const limit = queryLimit(req, { def: 60, max: 200 })
 
-  if (!(await areFriends(req.user!.id, friendId)))
-    throw new ForbiddenError("Can only view sessions of friends")
-  if (!(await hasPermission(friendId, req.user!.id, "history")))
+  const [friends, allowed] = await friendAccess(req.user!.id, friendId, "history")
+  if (!friends) throw new ForbiddenError("Can only view sessions of friends")
+  if (!allowed)
     throw new ForbiddenError("Friend hasn't granted you history access")
 
   const sessions = await getFriendSessions(friendId, limit)
@@ -97,9 +112,9 @@ router.get("/sessions/friend/:friendId/:sessionId", async (req: Request, res: Re
   const friendId = parseIntParam(String(req.params.friendId), "friendId")
   const sessionId = parseIntParam(String(req.params.sessionId), "sessionId")
 
-  if (!(await areFriends(req.user!.id, friendId)))
-    throw new ForbiddenError("Can only view sessions of friends")
-  if (!(await hasPermission(friendId, req.user!.id, "history")))
+  const [friends, allowed] = await friendAccess(req.user!.id, friendId, "history")
+  if (!friends) throw new ForbiddenError("Can only view sessions of friends")
+  if (!allowed)
     throw new ForbiddenError("Friend hasn't granted you history access")
 
   const session = await getFriendSessionDetails(friendId, sessionId)
@@ -262,9 +277,13 @@ router.delete("/joint-sessions/:jointSessionId/leave", async (req: Request, res:
 router.get("/watch/friend/:friendId/active", async (req: Request, res: Response) => {
   const friendId = parseIntParam(String(req.params.friendId), "friendId")
 
-  if (!(await areFriends(req.user!.id, friendId)))
-    throw new ForbiddenError("Not friends")
-  if (!(await hasPermission(friendId, req.user!.id, "watch_session")))
+  const [friends, allowed] = await friendAccess(
+    req.user!.id,
+    friendId,
+    "watch_session",
+  )
+  if (!friends) throw new ForbiddenError("Not friends")
+  if (!allowed)
     throw new ForbiddenError("Friend hasn't granted you watch session access")
 
   const status = await getUserActiveSessionStatus(friendId)
@@ -277,10 +296,13 @@ router.get("/watch/friend/:friendId/session/:sessionId/live", async (req: Reques
   const friendId = parseIntParam(String(req.params.friendId), "friendId")
   const sessionId = parseIntParam(String(req.params.sessionId), "sessionId")
 
-  if (!(await areFriends(req.user!.id, friendId)))
-    throw new ForbiddenError("Not friends")
-  if (!(await hasPermission(friendId, req.user!.id, "watch_session")))
-    throw new ForbiddenError("No watch permission")
+  const [friends, allowed] = await friendAccess(
+    req.user!.id,
+    friendId,
+    "watch_session",
+  )
+  if (!friends) throw new ForbiddenError("Not friends")
+  if (!allowed) throw new ForbiddenError("No watch permission")
 
   const status = await getUserActiveSessionStatus(friendId)
   if (!status.hasActiveSession || status.sessionId !== sessionId)

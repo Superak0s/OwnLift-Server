@@ -137,7 +137,7 @@ export async function getSupplementById(
   return rows[0] ? rowToSupplement(rows[0]) : null
 }
 
-export async function listSupplements(userId: number): Promise<Supplement[]> {
+async function listSupplements(userId: number): Promise<Supplement[]> {
   const [rows] = await pool.execute<SupplementRow[]>(
     `SELECT * FROM supplements WHERE user_id = ? ORDER BY name ASC`,
     [userId],
@@ -158,9 +158,12 @@ export async function listSupplementSummaries(
   if (supplements.length === 0) return []
 
   const [rows] = await pool.execute<(RowDataPacket & { supplement_id: number; day: string })[]>(
+    // A streak breaks at the first missing day, so anything older than the
+    // longest streak this can report is dead weight — cap the scan at a year
+    // instead of reading every log row the user has ever written.
     `SELECT supplement_id, DATE(taken_at) AS day
      FROM supplement_log
-     WHERE user_id = ?
+     WHERE user_id = ? AND taken_at >= DATE_SUB(CURDATE(), INTERVAL 366 DAY)
      GROUP BY supplement_id, DATE(taken_at)
      ORDER BY supplement_id, day DESC`,
     [userId],
@@ -346,9 +349,12 @@ export async function getStreak(
   supplementId: number,
 ): Promise<number> {
   const [rows] = await pool.execute<(RowDataPacket & { day: string })[]>(
+    // Same 366-day cap as listSupplementSummaries — a streak longer than that
+    // reports as 366.
     `SELECT DATE(taken_at) AS day
      FROM supplement_log
      WHERE user_id = ? AND supplement_id = ?
+       AND taken_at >= DATE_SUB(CURDATE(), INTERVAL 366 DAY)
      GROUP BY DATE(taken_at)
      ORDER BY day DESC`,
     [userId, supplementId],

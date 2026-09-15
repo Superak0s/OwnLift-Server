@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
 import { applyTrainerContext } from "@/middleware/trainerContext.js"
-import { ValidationError } from "@/middleware/errorHandler.js"
+import { parseIntParam, queryLimit } from "@/middleware/validation.js"
 import { getAnalytics } from "./analytics.model.js"
 
 const router: Router = Router()
@@ -11,15 +11,25 @@ router.get("/", authenticateToken, applyTrainerContext, async (req: Request, res
   const { dayNumber } = req.query
   const split = req.query.split as string | undefined
 
-  let parsedDayNumber: number | null = null
-  if (dayNumber !== undefined) {
-    parsedDayNumber = parseInt(dayNumber as string, 10)
-    if (isNaN(parsedDayNumber) || parsedDayNumber < 1) {
-      throw new ValidationError("dayNumber must be a positive integer")
-    }
-  }
+  const parsedDayNumber =
+    dayNumber === undefined
+      ? null
+      : parseIntParam(String(dayNumber), "dayNumber")
 
-  const analytics = await getAnalytics(userId, split || null, parsedDayNumber)
+  // The client picks its own lookback window. Without one this used to scan
+  // the user's entire history on every dashboard open; 365 covers the default
+  // dashboard and older app builds that send no ?days=. Ceiling is 10 years,
+  // which is "all time" for any real user: the aggregated columns (weight,
+  // reps, set_duration, rest_time) are in no index, so a wider window means a
+  // clustered-index lookup per set row and multi-second waits on a small box.
+  const days = queryLimit(req, { def: 365, max: 3650, key: "days" })
+
+  const analytics = await getAnalytics(
+    userId,
+    split || null,
+    parsedDayNumber,
+    days,
+  )
 
   res.json({
     success: true,

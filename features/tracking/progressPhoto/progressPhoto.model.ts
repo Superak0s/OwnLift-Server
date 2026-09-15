@@ -120,14 +120,15 @@ export async function getAllPhotos(
 export async function getPhotosByMuscle(
   userId: number,
   muscleGroup: string,
+  limit = 100,
 ): Promise<ProgressPhotoMuscleMeta[]> {
   const [rows] = await pool.execute<PhotoMetaRow[]>(
     `${SELECT_WITH_TAGS}
      WHERE p.user_id = ? AND p.id IN (
        SELECT photo_id FROM progress_photos_muscle_tags WHERE muscle_group = ?
      )
-     GROUP BY p.id ORDER BY p.taken_at DESC`,
-    [userId, muscleGroup],
+     GROUP BY p.id ORDER BY p.taken_at DESC LIMIT ?`,
+    [userId, muscleGroup, limit],
   )
   return rows.map(formatMeta)
 }

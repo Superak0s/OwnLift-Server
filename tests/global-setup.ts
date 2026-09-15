@@ -24,6 +24,11 @@ export default async function setup() {
   }
 
   // testDatabaseConnection() recreates the DB, all tables, and applies migrations.
-  const { testDatabaseConnection } = await import("@/config/database.js")
+  const { testDatabaseConnection, pool } = await import("@/config/database.js")
   await testDatabaseConnection()
+
+  // Vitest uses globalSetup's return value as the teardown hook. This pool is created in
+  // the main vitest process, where server.ts's shutdown() never runs to close it — without
+  // this its open sockets keep the process alive and vitest reports "close timed out".
+  return () => pool.end()
 }

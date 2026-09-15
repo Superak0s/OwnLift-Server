@@ -23,7 +23,14 @@ export const pool: Pool = mysql.createPool({
   database: requireEnv("DB_NAME"),
   port: Number(process.env.DB_PORT) || 3306,
   waitForConnections: true,
-  connectionLimit: 20,
+  // Sized for the box this server actually targets: one small, often
+  // single-core machine serving its owner plus a few invited friends. Twenty
+  // concurrent queries on one core is thrash, not throughput, and every idle
+  // connection carries its own MySQL thread buffers and prepared-statement
+  // cache. Eight rather than six leaves headroom above the widest fan-out in
+  // the codebase (getDOMSStats issues six in parallel); queueLimit absorbs
+  // anything past that.
+  connectionLimit: 8,
   // Bounded rather than unlimited (0): under a real overload, requests should
   // fail fast with an error the client can retry, not queue indefinitely and
   // pile up memory/timeouts.
@@ -131,6 +138,19 @@ async function initializeTables(): Promise<void> {
 // columns, indexes on existing tables). Each file in migrations/ runs at
 // most once, tracked in _migrations, in filename order.
 
+// MySQL commits DDL implicitly, so a migration cannot be wrapped in a real
+// transaction: if the boot dies between its ALTER and the _migrations insert,
+// the change is applied but unrecorded, and every later boot then aborts on
+// "Duplicate column name". Statements whose error means "already there" or
+// "already gone" count as done.
+// ponytail: covers add/drop of columns and indexes, which is every migration
+// so far. Add codes here if a future migration needs another shape.
+const ALREADY_APPLIED = new Set([
+  "ER_DUP_FIELDNAME", // ADD COLUMN, column exists
+  "ER_DUP_KEYNAME", // ADD INDEX, index exists
+  "ER_CANT_DROP_FIELD_OR_KEY", // DROP COLUMN/INDEX, already gone
+]);
+
 async function runMigrations(isFresh: boolean): Promise<void> {
   const migrationsDir = path.join(__dirname, "..", "migrations");
   if (!fs.existsSync(migrationsDir)) return;
@@ -171,18 +191,18 @@ async function runMigrations(isFresh: boolean): Promise<void> {
     );
     const connection = await pool.getConnection();
     try {
-      await connection.beginTransaction();
       for (const stmt of statements) {
-        await connection.execute(stmt);
+        try {
+          await connection.execute(stmt);
+        } catch (err) {
+          if (!ALREADY_APPLIED.has((err as { code?: string }).code ?? ""))
+            throw err;
+        }
       }
       await connection.execute(`INSERT INTO _migrations (name) VALUES (?)`, [
         file,
       ]);
-      await connection.commit();
       logger.info(`✓ Applied migration ${file}`);
-    } catch (err) {
-      await connection.rollback();
-      throw err;
     } finally {
       connection.release();
     }

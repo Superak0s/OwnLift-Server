@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express"
 import { ForbiddenError } from "./errorHandler.js"
 import { findUserById } from "../features/auth/auth.model.js"
 import { hasPermission } from "../features/social/sharing/sharing.model.js"
+import { areFriends } from "../features/social/friends/friends.model.js"
 
 /**
  * Trainer mode. When `X-Trainee-Id` is present and the named user has granted
@@ -15,8 +16,11 @@ import { hasPermission } from "../features/social/sharing/sharing.model.js"
  * particular DELETE /api/auth/account/data stays scoped to the caller, so a
  * trainer cannot wipe a trainee's account.
  *
- * The grant is read/write but never destructive: `denyTrainer` guards the
- * delete routes inside the covered routers, so erasing sessions or a program
+ * The grant is read/write but never destructive: `denyTrainer` guards every
+ * route in the covered routers that erases or overwrites in bulk — the delete
+ * routes, POST /api/program/upload (an upsert that replaces the whole program
+ * rather than merging into it) and POST /api/sessions/rename-exercise (a bulk
+ * rewrite of a split's entire set history) — so destroying a trainee's data
  * stays the trainee's own call.
  */
 export function denyTrainer(
@@ -43,8 +47,16 @@ export async function applyTrainerContext(
   if (!Number.isInteger(traineeId) || traineeId < 1)
     return next(new ForbiddenError("NOT_A_TRAINER"))
 
+  // Friendship AND grant, matching friendAccess() in sharing.routes.ts.
+  // removeFriend now deletes the grant rows, so the friendship check is
+  // belt-and-braces against any other path that drops a friendship without
+  // tearing grants down.
   const trainee = await findUserById(traineeId)
-  if (!trainee || !(await hasPermission(traineeId, req.user!.id, "trainer")))
+  if (
+    !trainee ||
+    !(await areFriends(req.user!.id, traineeId)) ||
+    !(await hasPermission(traineeId, req.user!.id, "trainer"))
+  )
     return next(new ForbiddenError("NOT_A_TRAINER"))
 
   req.trainer = { userId: req.user!.id, username: req.user!.username }

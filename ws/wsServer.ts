@@ -51,6 +51,20 @@ function sendToUser(userId: number, type: string, payload: object): void {
   send(clients.get(userId), type, payload)
 }
 
+/**
+ * Whether anyone other than `userId` currently holds a socket.
+ *
+ * The live-set fan-out queries (getSessionWatchers, getActiveTrainers) are
+ * two-table joins with an OR-ed friendship predicate, and they ran on every
+ * single recorded set — including on a one-person instance, where the lifter's
+ * own socket is the only one open and there is by definition nobody to deliver
+ * to. Checking the map first skips both.
+ */
+export function hasOtherClients(userId: number): boolean {
+  for (const id of clients.keys()) if (id !== userId) return true
+  return false
+}
+
 async function handlePushJointProgress(
   ws: WebSocket,
   user: WsUser,
@@ -119,7 +133,16 @@ export function closeWsServer(): void {
 }
 
 export function createWsServer(httpServer: http.Server): WebSocketServer {
-  const wss = new WebSocketServer({ server: httpServer, path: "/ws" })
+  // maxPayload, not just the 8KB check in the message handler below: ws
+  // defaults to 100 MB and buffers the entire frame before any handler runs,
+  // so without this an unauthenticated socket could make the box allocate
+  // 100 MB (twice, counting raw.toString()) before the size guard, the 5s auth
+  // timeout or the pre-auth message cap had a chance to fire.
+  const wss = new WebSocketServer({
+    server: httpServer,
+    path: "/ws",
+    maxPayload: 8 * 1024,
+  })
 
   const heartbeat = setInterval(() => {
     wss.clients.forEach((ws) => {
@@ -183,8 +206,6 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
           return
         }
       }
-
-      logger.info("[WS] message type:", msg.type)
 
       if (!user && msg.type === "auth") {
         logger.info("[WS] processing auth message")
@@ -265,13 +286,25 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
       const count = (msgCount.get(authedUser.id) ?? 0) + 1
       msgCount.set(authedUser.id, count)
       setTimeout(() => {
+        // Only decrement a live entry. The close handler deletes the key, and
+        // a timer still pending from a message sent in the last second would
+        // otherwise re-insert it (?? 1 → max(0, 0) → set 0) and leak the
+        // entry for the life of the process.
+        if (!msgCount.has(authedUser.id)) return
         msgCount.set(
           authedUser.id,
           Math.max(0, (msgCount.get(authedUser.id) ?? 1) - 1),
         )
       }, 1000)
       if (count > 20) {
+        // Tell the client why, then close. Replying alone left the socket
+        // open, so a flooding client kept paying us to JSON.parse up to 8KB,
+        // allocate a timer and write an error frame per message — the cap only
+        // ever protected the DB-touching handlers below. A legitimate client
+        // sends ~1 message per completed set, so this is ~90x its peak rate
+        // and closing costs it nothing.
         send(ws, "error", { message: "Rate limit exceeded" })
+        ws.close(4008, "Rate limit exceeded")
         return
       }
 
@@ -287,7 +320,15 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
             logger.warn(`[WS] unknown type: ${msg.type}`)
         }
       } catch (err) {
-        send(ws, "error", { message: (err as Error).message })
+        // Mirror the HTTP error handler's polarity: deliberate 4xx messages
+        // are safe to return, anything else is masked. Without this a driver
+        // error from the handlers below reached the client verbatim, leaking
+        // schema detail that the REST surface masks in production.
+        const status = (err as { statusCode?: number }).statusCode ?? 500
+        logger.error(`[WS] ${msg.type} failed:`, (err as Error).message)
+        send(ws, "error", {
+          message: status < 500 ? (err as Error).message : "Server error",
+        })
       }
     })
 

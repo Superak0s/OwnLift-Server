@@ -1,4 +1,26 @@
-export interface Exercise {
+/** Per-machine note and pin/seat setting, keyed by machine name. */
+export interface MachineMeta {
+  note?: string
+  setting?: string
+}
+
+/**
+ * The exercise fields `PATCH /exercise/machine` is allowed to touch. Kept as
+ * its own type so the route's whitelist and this interface can't drift.
+ */
+export interface MachineFields {
+  /** Machines/setups this exercise can be run on. */
+  machines?: string[]
+  /** The machine in use; stamped onto each set as `machineName`. */
+  selectedMachine?: string
+  /** Machine selected when the exercise is opened with no explicit choice. */
+  defaultMachine?: string
+  /** Best stats pool every machine instead of just the selected one. */
+  bestAcrossMachines?: boolean
+  machineMeta?: Record<string, MachineMeta>
+}
+
+export interface Exercise extends MachineFields {
   name: string
   primaryMuscles?: string[]
   secondaryMuscles?: string[]

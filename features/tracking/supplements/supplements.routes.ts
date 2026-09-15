@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
-import { queryLimit } from "@/middleware/validation.js"
+import { parseIntParam, queryLimit } from "@/middleware/validation.js"
 import {
   ValidationError,
   NotFoundError,
@@ -24,22 +24,45 @@ router.use(authenticateToken)
 const VALID_TIME = /^\d{1,2}:\d{2}$/
 const VALID_HEX_COLOR = /^#[0-9A-Fa-f]{6}$/
 
-function validateReminderTime(t: unknown): void {
-  if (t != null && (typeof t !== "string" || !VALID_TIME.test(t))) {
+function validateSupplementFields(
+  fields: Record<string, unknown>,
+  requireName: boolean,
+): void {
+  const { name, unit, defaultAmount, reminderTime, color } = fields
+  if (requireName || name !== undefined) {
+    if (typeof name !== "string" || !name.trim())
+      throw new ValidationError("name must be a non-empty string")
+    if (name.trim().length > 100)
+      throw new ValidationError("name must be 100 characters or fewer")
+  }
+  if (
+    unit !== undefined &&
+    (typeof unit !== "string" || !unit.trim() || unit.length > 30)
+  ) {
+    throw new ValidationError("unit must be a non-empty string (max 30 chars)")
+  }
+  if (
+    defaultAmount !== undefined &&
+    (typeof defaultAmount !== "number" ||
+      defaultAmount <= 0 ||
+      defaultAmount > 10000)
+  ) {
+    throw new ValidationError(
+      "defaultAmount must be a positive number (max 10000)",
+    )
+  }
+  if (
+    reminderTime != null &&
+    (typeof reminderTime !== "string" || !VALID_TIME.test(reminderTime))
+  ) {
     throw new ValidationError("reminderTime must be in HH:MM format")
   }
-}
-
-function validateColor(c: unknown): void {
-  if (c != null && (typeof c !== "string" || !VALID_HEX_COLOR.test(c))) {
+  if (
+    color != null &&
+    (typeof color !== "string" || !VALID_HEX_COLOR.test(color))
+  ) {
     throw new ValidationError("color must be a hex color string (e.g. #FF5733)")
   }
-}
-
-function parseSupplementId(raw: string): number {
-  const id = parseInt(raw, 10)
-  if (isNaN(id)) throw new ValidationError("Invalid supplement id")
-  return id
 }
 
 async function requireSupplement(userId: number, supplementId: number) {
@@ -64,29 +87,7 @@ router.post("/", async (req: Request, res: Response) => {
     icon = null,
   } = req.body
 
-  if (!name || typeof name !== "string" || !name.trim()) {
-    throw new ValidationError("name is required")
-  }
-  if (name.trim().length > 100) {
-    throw new ValidationError("name must be 100 characters or fewer")
-  }
-  if (typeof unit !== "string" || !unit.trim() || unit.length > 30) {
-    throw new ValidationError(
-      "unit must be a non-empty string (max 30 chars)",
-    )
-  }
-  if (
-    defaultAmount !== undefined &&
-    (typeof defaultAmount !== "number" ||
-      defaultAmount <= 0 ||
-      defaultAmount > 10000)
-  ) {
-    throw new ValidationError(
-      "defaultAmount must be a positive number (max 10000)",
-    )
-  }
-  validateReminderTime(reminderTime)
-  validateColor(color)
+  validateSupplementFields({ name, unit, defaultAmount, reminderTime, color }, true)
 
   const supplement = await createSupplement(
     req.user!.id,
@@ -103,7 +104,7 @@ router.post("/", async (req: Request, res: Response) => {
 })
 
 router.patch("/:id", async (req: Request, res: Response) => {
-  const supplementId = parseSupplementId(String(req.params.id))
+  const supplementId = parseIntParam(String(req.params.id), "supplement ID")
   await requireSupplement(req.user!.id, supplementId)
 
   const {
@@ -116,32 +117,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
     icon,
   } = req.body
 
-  if (name !== undefined) {
-    if (typeof name !== "string" || !name.trim())
-      throw new ValidationError("name must be a non-empty string")
-    if (name.trim().length > 100)
-      throw new ValidationError("name must be 100 characters or fewer")
-  }
-  if (
-    unit !== undefined &&
-    (typeof unit !== "string" || !unit.trim() || unit.length > 30)
-  ) {
-    throw new ValidationError(
-      "unit must be a non-empty string (max 30 chars)",
-    )
-  }
-  if (
-    defaultAmount !== undefined &&
-    (typeof defaultAmount !== "number" ||
-      defaultAmount <= 0 ||
-      defaultAmount > 10000)
-  ) {
-    throw new ValidationError(
-      "defaultAmount must be a positive number (max 10000)",
-    )
-  }
-  validateReminderTime(reminderTime)
-  validateColor(color)
+  validateSupplementFields({ name, unit, defaultAmount, reminderTime, color }, false)
 
   const updated = await updateSupplement(req.user!.id, supplementId, {
     name: name?.trim(),
@@ -157,14 +133,14 @@ router.patch("/:id", async (req: Request, res: Response) => {
 })
 
 router.delete("/:id", async (req: Request, res: Response) => {
-  const supplementId = parseSupplementId(String(req.params.id))
+  const supplementId = parseIntParam(String(req.params.id), "supplement ID")
   const deleted = await deleteSupplement(req.user!.id, supplementId)
   if (!deleted) throw new NotFoundError("Supplement")
   res.json({ success: true })
 })
 
 router.post("/:id/log", async (req: Request, res: Response) => {
-  const supplementId = parseSupplementId(String(req.params.id))
+  const supplementId = parseIntParam(String(req.params.id), "supplement ID")
   const supplement = await requireSupplement(req.user!.id, supplementId)
   const { amount, takenAt, note } = req.body
 
@@ -188,7 +164,7 @@ router.post("/:id/log", async (req: Request, res: Response) => {
 })
 
 router.get("/:id/log", async (req: Request, res: Response) => {
-  const supplementId = parseSupplementId(String(req.params.id))
+  const supplementId = parseIntParam(String(req.params.id), "supplement ID")
   await requireSupplement(req.user!.id, supplementId)
 
   const limit = queryLimit(req, { def: 30, max: 365 })
@@ -208,11 +184,10 @@ router.get("/:id/log", async (req: Request, res: Response) => {
 })
 
 router.delete("/:id/log/:entryId", async (req: Request, res: Response) => {
-  const supplementId = parseSupplementId(String(req.params.id))
+  const supplementId = parseIntParam(String(req.params.id), "supplement ID")
   await requireSupplement(req.user!.id, supplementId)
 
-  const entryId = parseInt(String(req.params.entryId), 10)
-  if (isNaN(entryId)) throw new ValidationError("Invalid entry id")
+  const entryId = parseIntParam(String(req.params.entryId), "entry ID")
 
   const deleted = await deleteLogEntry(req.user!.id, entryId)
   if (!deleted) throw new NotFoundError("Log entry")

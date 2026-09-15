@@ -116,30 +116,23 @@ export async function revokePermission(
     throw new NotFoundError("Permission")
 }
 
-export async function getGrantedPermissions(
+/**
+ * Permissions this user granted to others ("granted") or that others granted
+ * to them ("received") — same query mirrored across the two user columns.
+ */
+export async function getPermissions(
   userId: number,
+  direction: "granted" | "received",
 ): Promise<Permission[]> {
+  const [self, other] =
+    direction === "granted"
+      ? ["from_user_id", "to_user_id"]
+      : ["to_user_id", "from_user_id"]
+  const label = direction === "granted" ? "to" : "from"
   const [rows] = await pool.execute<PermissionRow[]>(
-    `SELECT sp.id, sp.to_user_id AS toUserId, sp.permission_type AS permissionType, sp.payload, sp.created_at AS createdAt, sp.updated_at AS updatedAt, u.username AS toUsername
-     FROM sharing_permissions sp JOIN users u ON u.id = sp.to_user_id
-     WHERE sp.from_user_id = ? ORDER BY sp.permission_type, sp.created_at DESC LIMIT 500`,
-    [userId],
-  )
-  return rows.map((r) => ({
-    ...r,
-    payload: r.payload
-      ? (JSON.parse(r.payload) as Record<string, unknown>)
-      : null,
-  }))
-}
-
-export async function getReceivedPermissions(
-  userId: number,
-): Promise<Permission[]> {
-  const [rows] = await pool.execute<PermissionRow[]>(
-    `SELECT sp.id, sp.from_user_id AS fromUserId, sp.permission_type AS permissionType, sp.payload, sp.created_at AS createdAt, sp.updated_at AS updatedAt, u.username AS fromUsername
-     FROM sharing_permissions sp JOIN users u ON u.id = sp.from_user_id
-     WHERE sp.to_user_id = ? ORDER BY sp.permission_type, sp.created_at DESC LIMIT 500`,
+    `SELECT sp.id, sp.${other} AS ${label}UserId, sp.permission_type AS permissionType, sp.payload, sp.created_at AS createdAt, sp.updated_at AS updatedAt, u.username AS ${label}Username
+     FROM sharing_permissions sp JOIN users u ON u.id = sp.${other}
+     WHERE sp.${self} = ? ORDER BY sp.permission_type, sp.created_at DESC LIMIT 500`,
     [userId],
   )
   return rows.map((r) => ({
@@ -164,8 +157,16 @@ export async function getActiveTrainers(
   traineeId: number,
 ): Promise<TrainerGrantRow[]> {
   const [rows] = await pool.execute<TrainerGrantRow[]>(
+    // Requires a live friendship as well as the grant, matching
+    // getSessionWatchers — otherwise a stale grant keeps fanning out the
+    // trainee's live set events to someone they already unfriended.
     `SELECT sp.to_user_id AS trainerId, u.username AS trainerUsername
-     FROM sharing_permissions sp JOIN users u ON u.id = sp.to_user_id
+     FROM sharing_permissions sp
+     JOIN users u ON u.id = sp.to_user_id
+     JOIN friendships f
+       ON f.status = 'accepted'
+      AND ((f.user_id = sp.from_user_id AND f.friend_id = sp.to_user_id)
+        OR (f.user_id = sp.to_user_id AND f.friend_id = sp.from_user_id))
      WHERE sp.from_user_id = ? AND sp.permission_type = 'trainer'`,
     [traineeId],
   )
@@ -408,10 +409,37 @@ export async function getUserActiveSessionStatus(
   userId: number,
 ): Promise<{ hasActiveSession: boolean; sessionId: number | null }> {
   const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT id FROM sessions WHERE user_id = ? AND end_time IS NULL ORDER BY start_time DESC LIMIT 1`,
+    // end_time is not in idx_sessions_user_start, so with no active session —
+    // the normal state — this walked every session the user had ever logged
+    // before giving up. sessionCleanup ends anything idle >30min, so a session
+    // older than a day is always closed and this bound changes no behaviour.
+    `SELECT id FROM sessions
+     WHERE user_id = ? AND end_time IS NULL
+       AND start_time > NOW() - INTERVAL 1 DAY
+     ORDER BY start_time DESC LIMIT 1`,
     [userId],
   )
   return rows[0]
     ? { hasActiveSession: true, sessionId: rows[0].id }
     : { hasActiveSession: false, sessionId: null }
+}
+
+/**
+ * joint_sessions is the one table with no user_id and no foreign key, so
+ * deleting a user cascades away their joint_session_participants rows but
+ * leaves the parent behind as an empty shell that accumulates forever. The
+ * row holds nothing but status and created_at, so this is housekeeping rather
+ * than a leak — but it is a one-statement fix on a table that is always tiny.
+ *
+ * Safe to run on a schedule: acceptInvite() inserts the joint_sessions row and
+ * both participant rows in a single transaction, so a live session is never
+ * briefly parentless.
+ */
+export async function deleteOrphanedJointSessions(): Promise<number> {
+  const [result] = await pool.execute<ResultSetHeader>(
+    `DELETE js FROM joint_sessions js
+     LEFT JOIN joint_session_participants p ON p.joint_session_id = js.id
+     WHERE p.id IS NULL`,
+  )
+  return result.affectedRows
 }

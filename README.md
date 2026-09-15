@@ -17,13 +17,14 @@ A Node.js / TypeScript REST + WebSocket API, backed by MySQL, Docker-first and s
 - **Real-time:** **WebSockets** (`ws`).
 - **Uploads:** **multer** (memory storage for photos; magic-byte checked, stored as LONGBLOB).
 - **Security:** `helmet`, `cors`, `express-rate-limit`.
+- **Compression:** `compression` — gzip on JSON responses over 1 kb (already-compressed types like photo BLOBs are skipped).
 - **Package manager:** **pnpm**.
 
 ---
 
 ## Architecture
 
-Request pipeline (`server.ts`): `helmet` → `cors` (locked to `ALLOWED_ORIGINS`) → `express.json` (50 kb limit) → static `public/` → per-request UUID + logger → rate limiters → routes → 404 → global error handler.
+Request pipeline (`server.ts`): `helmet` → `cors` (locked to `ALLOWED_ORIGINS`) → `compression` (gzip, 1 kb threshold) → per-request UUID + logger → rate limiters → `express.json` (50 kb limit) → `GET /healthz` → routes → static `public/` → 404 → global error handler. Body parsing sits *after* the rate limiters so a flood is rejected before the server pays to buffer and parse the payload.
 
 - **Fails fast** on boot if `JWT_SECRET` is missing/`<32` chars or `ALLOWED_ORIGINS` is unset.
 - **Rate limits:** `/api/auth` = 20 req / 15 min; `/api` = 200 req / 60 s.
@@ -135,8 +136,11 @@ Set these environment variables. A `.env` file is read by Node directly — the 
 | `NODE_ENV`        | no       | —           | `production` masks error details; `development` shows stack traces |
 | `SERVER_FQDN`     | no       | —           | Public domain name; advertised over mDNS (`_ownlift._tcp`) so clients that find this server on the LAN can connect via this FQDN instead of the raw IP |
 | `RATE_LIMIT_BYPASS_LOCAL_IPS` | no | `false` | `true` skips the rate limiters for loopback/private-range client IPs (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) |
+| `TRUST_PROXY_HOPS` | no | `0` | Number of trusted reverse-proxy hops in front of the server. **Set this to `1` if you run behind nginx/Caddy/Traefik**, or the rate limiters will key every client into one shared bucket. Leave at `0` when the container's port is exposed directly |
 
 > ⚠️ **Security:** do not commit real secrets. Rotate any credentials that have been checked into `.env`, and keep `.env` out of version control.
+
+> ⚠️ **`TRUST_PROXY_HOPS`:** this defaults to `0` (don't trust `X-Forwarded-For`) because that is the safe default for a directly-exposed box — otherwise a client can rotate the header to reset the auth rate limiter and brute-force passwords freely. If you terminate TLS at a reverse proxy, you **must** set `TRUST_PROXY_HOPS=1` so `req.ip` is the real client address.
 
 ---
 

@@ -4,13 +4,14 @@ import { applyTrainerContext, denyTrainer } from "@/middleware/trainerContext.js
 import { ForbiddenError, ValidationError } from "@/middleware/errorHandler.js"
 import {
   parseIntParam,
+  queryLimit,
   validateRequired,
   validateSessionCreation,
   validateSetTiming,
 } from "@/middleware/validation.js"
 import { pool } from "@/config/database.js"
 import { logger } from "@/utils/logger.js"
-import { sendToUser } from "@/ws/wsServer.js"
+import { sendToUser, hasOtherClients } from "@/ws/wsServer.js"
 import {
   createSession,
   recordSetTiming,
@@ -23,10 +24,7 @@ import {
   deleteDemoSessions,
   updateSessionSplit,
 } from "./workouts.model.js"
-import {
-  getFriendSessionDetails,
-  getActiveTrainers,
-} from "../social/sharing/sharing.model.js"
+import { getActiveTrainers } from "../social/sharing/sharing.model.js"
 
 const router: Router = Router()
 
@@ -46,14 +44,22 @@ async function requireOwnSession(
 
 router.get("/", async (req: Request, res: Response) => {
   const userId = req.user!.id
-  const { split, dayNumber, limit, includeTimings } = req.query
+  const { split, dayNumber, includeTimings } = req.query
+
+  // `limit` was previously unbounded, so ?limit=999999 with timings was a
+  // ~36k-row, double-digit-MB response. The caps below are the smallest ones
+  // that still clear every real caller: the app's offline migration
+  // (SettingsScreen.migrateUserData) asks for 1000 sessions *with* timings to
+  // copy the full server history into local storage, and truncating that is
+  // silent data loss, not a slow request.
+  const withTimings = includeTimings === "true"
 
   const sessions = await getSessionHistory(
     userId,
     (split as string) || null,
-    dayNumber ? parseInt(dayNumber as string, 10) : null,
-    limit ? parseInt(limit as string, 10) : 30,
-    includeTimings === "true",
+    dayNumber ? parseIntParam(String(dayNumber), "dayNumber") : null,
+    queryLimit(req, { def: 30, max: withTimings ? 1000 : 365 }),
+    withTimings,
   )
 
   res.json({ success: true, sessions, total: sessions.length })
@@ -99,7 +105,7 @@ router.post("/start", validateSessionCreation, async (req: Request, res: Respons
  * Rename / re-group an exercise everywhere it appears in a split's session
  * history. Static path — declared before the dynamic /:sessionId routes.
  */
-router.post("/rename-exercise", async (req: Request, res: Response) => {
+router.post("/rename-exercise", denyTrainer, async (req: Request, res: Response) => {
   const userId = req.user!.id
   const { oldName, newName, primaryMuscles, secondaryMuscles } = req.body
   const split = req.body.split
@@ -159,14 +165,34 @@ router.post("/:sessionId/set", validateRequired(["exerciseName", "setIndex", "st
     rpe ?? null,
   )
 
-  pushLiveUpdateToWatchers(userId, sessionId).catch((err: Error) =>
-    logger.warn("[WS] live update push failed:", err.message),
-  )
+  // Watchers get just the set that was recorded. The old push re-read the
+  // whole session from the DB and re-sent every set so far on every set, so a
+  // 40-set workout shipped 40 ever-growing payloads. Fields match what
+  // getFriendSessionDetails returns so the spectator's array stays uniform.
+  // Both fan-out paths below are two-table joins that used to run on every
+  // recorded set, including on a one-person instance where the lifter's own
+  // socket is the only one open. No other socket means nothing to deliver.
+  if (hasOtherClients(userId)) {
+    pushLiveSetToWatchers(userId, sessionId, {
+      id: timing.id,
+      setIndex,
+      weight: weight || 0,
+      reps: reps || 0,
+      setDuration: timing.setDuration,
+      restTime: timing.restTime,
+      machineName: timing.machineName,
+      exerciseName: exerciseName.trim(),
+      exercisePrimaryMuscles: primaryMuscles ?? [],
+      exerciseSecondaryMuscles: secondaryMuscles ?? [],
+    }).catch((err: Error) =>
+      logger.warn("[WS] live set push failed:", err.message),
+    )
+  }
 
   if (req.trainer) {
     // A trainer recorded the set — the trainee needs to know their data changed.
     sendToUser(userId, "trainer_set_recorded", trainerEventPayload(req, sessionId))
-  } else {
+  } else if (hasOtherClients(userId)) {
     // The trainee recorded their own set — tell every trainer with an active grant.
     const trainers = await getActiveTrainers(userId)
     trainers.forEach((t) =>
@@ -304,19 +330,14 @@ async function pushSessionStatusToWatchers(
   }
 }
 
-async function pushLiveUpdateToWatchers(
+async function pushLiveSetToWatchers(
   userId: number,
   sessionId: number,
+  set: Record<string, unknown>,
 ): Promise<void> {
   const watchers = await getSessionWatchers(userId)
-
-  if (!watchers.length) return
-
-  const liveSession = await getFriendSessionDetails(userId, sessionId)
-  if (!liveSession) return
-
   watchers.forEach((w: { to_user_id: number }) => {
-    sendToUser(w.to_user_id, "live_session_update", { liveSession })
+    sendToUser(w.to_user_id, "live_set_recorded", { sessionId, set })
   })
 }
 

@@ -143,17 +143,12 @@ export async function getBodyFatHistory(
 export async function deleteBodyFatEntry(
   userId: number,
   entryId: number,
-): Promise<boolean | null> {
-  const [check] = await pool.execute<(RowDataPacket & { id: number })[]>(
-    "SELECT id FROM body_fat_measurements WHERE id = ? AND user_id = ?",
+): Promise<boolean> {
+  const [result] = await pool.execute<ResultSetHeader>(
+    "DELETE FROM body_fat_measurements WHERE id = ? AND user_id = ?",
     [entryId, userId],
   )
-  if (!check[0]) return null
-  const [result] = await pool.execute<ResultSetHeader>(
-    "DELETE FROM body_fat_measurements WHERE id = ?",
-    [entryId],
-  )
-  return (result as ResultSetHeader).affectedRows > 0
+  return result.affectedRows > 0
 }
 
 function formatEntry(e: BodyFatRow): BodyFatEntry {

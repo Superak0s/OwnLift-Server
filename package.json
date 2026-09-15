@@ -1,10 +1,10 @@
 {
   "name": "ownlift-server",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Node.js server for processing workout files and splitting exercises by day",
   "main": "server.js",
   "scripts": {
-    "build": "tsc && tsc-alias && cp config/schema.sql dist/config/schema.sql && cp -r migrations/. dist/migrations",
+    "build": "tsc && tsc-alias && cp config/schema.sql dist/config/schema.sql && mkdir -p dist/migrations && (cp -r migrations/. dist/migrations/ 2>/dev/null || true)",
     "dev": "tsx watch --env-file-if-exists=.env server.ts",
     "start": "node --env-file-if-exists=.env dist/server.js",
     "ownlift": "tsx --env-file-if-exists=.env ownlift.ts",
@@ -24,6 +24,7 @@
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "bonjour-service": "^1.4.4",
+    "compression": "^1.8.1",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
@@ -34,6 +35,7 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
+    "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
@@ -41,11 +43,11 @@
     "@types/node": "^24.13.3",
     "@types/supertest": "^7.2.1",
     "@types/ws": "^8.18.1",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^5.0.0",
     "supertest": "^7.2.2",
     "tsc-alias": "^1.9.4",
     "tsx": "^4.23.13",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.11"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
   }
 }

@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs"
 import jwt from "jsonwebtoken"
+import { randomUUID } from "crypto"
 import type { SignOptions } from "jsonwebtoken"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
 import type { AuthUser } from "./user.types.js"
@@ -120,6 +121,26 @@ export const verifyPassword = (
   plain: string,
   hashed: string,
 ): Promise<boolean> => bcrypt.compare(plain, hashed)
+
+/**
+ * Stand-in hash for the "no such user" signin path. Returning before bcrypt
+ * when the username is unknown made signin ~300ms faster for absent accounts
+ * than for present ones, which is a readable account-existence oracle even
+ * over a LAN. Comparing against this makes both paths pay the same cost.
+ *
+ * Hashed from a random value, so nothing can match it by design, and computed
+ * once rather than per request.
+ *
+ * Built lazily on the first signin rather than at module load: bcryptjs is
+ * pure JS, and hashSync at cost 12 blocks the event loop for well over a
+ * second on a small ARM box — a cost every boot used to pay before the server
+ * could accept its first connection, whether or not anyone ever signed in.
+ */
+let dummyPasswordHash: string | null = null
+
+export function getDummyPasswordHash(): string {
+  return (dummyPasswordHash ??= bcrypt.hashSync(randomUUID(), 12))
+}
 
 export function generateToken(userId: number, tokenVersion: number): string {
   return jwt.sign({ userId, tokenVersion }, process.env.JWT_SECRET!, {

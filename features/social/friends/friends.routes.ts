@@ -13,7 +13,6 @@ import {
   getPendingRequests,
   getSentRequests,
   searchUsers,
-  findFriendSuggestionsByEmailHashes,
   blockUser,
   unblockUser,
   getBlockedUsers,
@@ -57,46 +56,6 @@ router.get("/requests/pending", async (req: Request, res: Response) => {
 router.get("/requests/sent", async (req: Request, res: Response) => {
   const requests = await getSentRequests(req.user!.id)
   res.json({ success: true, requests, count: requests.length })
-})
-
-/**
- * POST /api/friends/suggest-from-contacts
- *
- * Body: { emailHashes: string[] } — SHA-256 hex digests of the caller's
- * phone contacts' emails, hashed client-side. We only ever compare hashes
- * here; raw emails from the contact list never reach the server.
- */
-router.post("/suggest-from-contacts", async (req: Request, res: Response) => {
-  const { emailHashes } = req.body
-
-  if (!Array.isArray(emailHashes)) {
-    throw new ValidationError("emailHashes must be an array")
-  }
-
-  if (emailHashes.length === 0) {
-    res.json({ success: true, suggestions: [], count: 0 })
-    return
-  }
-
-  if (emailHashes.length > 2000) {
-    throw new ValidationError("Too many contacts submitted (max 2000)")
-  }
-
-  const isValidHash = (h: unknown): h is string =>
-    typeof h === "string" && /^[a-f0-9]{64}$/i.test(h)
-
-  if (!emailHashes.every(isValidHash)) {
-    throw new ValidationError(
-      "emailHashes must be SHA-256 hex digests (64 hex characters each)",
-    )
-  }
-
-  const suggestions = await findFriendSuggestionsByEmailHashes(
-    req.user!.id,
-    emailHashes,
-  )
-
-  res.json({ success: true, suggestions, count: suggestions.length })
 })
 
 router.post("/request", async (req: Request, res: Response) => {
@@ -205,8 +164,7 @@ router.delete("/block/:userId", async (req: Request, res: Response) => {
 router.post("/report", async (req: Request, res: Response) => {
   const { userId, reason, details } = req.body
 
-  const targetId = parseInt(String(userId), 10)
-  if (isNaN(targetId)) throw new ValidationError("Invalid user ID")
+  const targetId = parseIntParam(String(userId), "user ID")
 
   if (!REPORT_REASONS.includes(reason)) {
     throw new ValidationError(

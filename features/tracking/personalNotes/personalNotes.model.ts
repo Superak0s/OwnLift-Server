@@ -61,10 +61,11 @@ async function getNoteById(
 export async function getNotesByMuscle(
   userId: number,
   muscleGroup: string,
+  limit = 100,
 ): Promise<PersonalMuscleNote[]> {
   const [rows] = await pool.execute<PersonalMuscleNote[]>(
-    `SELECT ${NOTE_COLS} FROM personal_muscle_notes WHERE user_id = ? AND muscle_group = ? ORDER BY updated_at DESC`,
-    [userId, muscleGroup],
+    `SELECT ${NOTE_COLS} FROM personal_muscle_notes WHERE user_id = ? AND muscle_group = ? ORDER BY updated_at DESC LIMIT ?`,
+    [userId, muscleGroup, limit],
   );
   return rows;
 }

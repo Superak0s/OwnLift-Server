@@ -16,6 +16,7 @@ export async function getAnalytics(
   userId: number,
   split?: string | null,
   dayNumber?: number | null,
+  days = 365,
 ): Promise<AnalyticsSummary> {
   let q = `
     SELECT
@@ -29,8 +30,9 @@ export async function getAnalytics(
       MAX(s.start_time) AS last_session
     FROM sessions s
     LEFT JOIN set_timings st ON s.id = st.session_id
-    WHERE s.user_id = ? AND s.end_time IS NOT NULL`
-  const params: any[] = [userId]
+    WHERE s.user_id = ? AND s.end_time IS NOT NULL
+      AND s.start_time >= (NOW() - INTERVAL ? DAY)`
+  const params: any[] = [userId, days]
   if (split) {
     q += ` AND s.\`split\` = ?`
     params.push(split)

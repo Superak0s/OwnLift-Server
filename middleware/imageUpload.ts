@@ -1,22 +1,18 @@
 import multer from "multer"
 import { ValidationError } from "./errorHandler.js"
 
-// Shared by both photo routers (/api/tracking/photos and .../photos/muscle).
-// Each model still enforces its own narrower mime list — this is only the
-// transport-level gate.
-const ALLOWED_MIMETYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/gif",
-])
+// Transport-level gate for /api/tracking/photos/muscle uploads. The model
+// still enforces its own narrower mime list.
+// Kept in sync with the model's list deliberately: multer accepting a type the
+// model rejects meant a 10 MB GIF was uploaded in full and then 400'd.
+const ALLOWED_MIMETYPES = new Set(["image/jpeg", "image/png", "image/webp"])
 
 export const photoUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_MIMETYPES.has(file.mimetype)) cb(null, true)
-    else cb(new ValidationError("Only JPEG, PNG, WebP, or GIF images are allowed"))
+    else cb(new ValidationError("Only JPEG, PNG, or WebP images are allowed"))
   },
 })
 

@@ -41,7 +41,12 @@ export function queryLimit(
   req: Request,
   { def, max, key = "limit" }: { def: number; max: number; key?: string },
 ): number {
-  return Math.min(parseInt(req.query[key] as string, 10) || def, max)
+  // Floor at 1 as well as capping: `?limit=-1` is truthy, so without the
+  // Math.max it reached `LIMIT ?` as a negative and every list endpoint 500'd.
+  return Math.min(
+    Math.max(parseInt(req.query[key] as string, 10) || def, 1),
+    max,
+  )
 }
 
 const validateEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)
@@ -112,9 +117,12 @@ function checkMuscleArray(
 /** Reject requests that are missing any of the listed body fields. */
 export function validateRequired(requiredFields: string[]) {
   return (req: Request, _res: Response, next: NextFunction): void => {
+    // req.body is undefined when the request arrives with no Content-Type, so
+    // indexing it threw a TypeError and surfaced as a 500 instead of the 400
+    // this validator exists to produce.
+    const body = req.body ?? {}
     const missing = requiredFields.filter(
-      (f) =>
-        req.body[f] === undefined || req.body[f] === null || req.body[f] === "",
+      (f) => body[f] === undefined || body[f] === null || body[f] === "",
     )
     if (missing.length > 0) {
       throw new ValidationError(`Missing required fields: ${missing.join(", ")}`)
@@ -195,15 +203,8 @@ export function validateProfileUpdate(
   _res: Response,
   next: NextFunction,
 ): void {
-  const { name, email, heightCm } = req.body
+  const { name, email } = req.body
   const errors: string[] = []
-
-  // Range is enforced again in updateUserProfile, which is the only writer.
-  if (heightCm !== undefined) {
-    const h = Number(heightCm)
-    if (!Number.isFinite(h) || h <= 0 || h > 300)
-      errors.push("Height must be between 1-300 cm")
-  }
 
   if (name !== undefined) {
     if (typeof name !== "string" || !name.trim()) {

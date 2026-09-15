@@ -6,11 +6,21 @@ import type { RowDataPacket, ResultSetHeader } from "mysql2"
 import { NotFoundError, ValidationError } from "@/middleware/errorHandler.js"
 import type {
   Exercise,
+  MachineFields,
   SplitWorkout,
   ProgramDay,
   ProgramData,
   StoredProgram,
 } from "./programs.types.js"
+
+/** The only exercise keys patchExerciseMachine will write. */
+export const MACHINE_FIELDS = [
+  "machines",
+  "selectedMachine",
+  "defaultMachine",
+  "bestAcrossMachines",
+  "machineMeta",
+] as const satisfies readonly (keyof MachineFields)[]
 
 function parseProgramData(raw: string, userId: number): ProgramData {
   try {
@@ -74,7 +84,9 @@ export async function getProgramByUserId(
   userId: number,
 ): Promise<StoredProgram | null> {
   const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT program_data, original_filename, uploaded_at FROM workout_programs WHERE user_id = ? ORDER BY uploaded_at DESC LIMIT 1`,
+    // user_id is the primary key, so there is never more than one row — the
+    // ORDER BY that used to be here sorted a single-row result set.
+    `SELECT program_data, original_filename, uploaded_at FROM workout_programs WHERE user_id = ?`,
     [userId],
   )
   if (!rows[0]) return null
@@ -175,6 +187,39 @@ export async function addExercise(
     exerciseIndex: day.split[split].exercises.length - 1,
     exercise: newExercise,
   }
+}
+
+/**
+ * Targeted machine-settings patch. Exists so trainer mode has a way to change
+ * a trainee's machine setup without `POST /program/upload`, which is a whole-
+ * program replace and is therefore `denyTrainer`-gated: a trainer holding a
+ * stale copy of the program would otherwise overwrite edits the trainee made
+ * in the meantime. Only the keys in MACHINE_FIELDS are copied, so this cannot
+ * be used to rewrite exercise names, sets, or anything else in the program.
+ */
+export async function patchExerciseMachine(
+  userId: number,
+  dayNumber: number,
+  split: string,
+  exerciseIndex: number,
+  patch: MachineFields,
+): Promise<{ exerciseIndex: number }> {
+  const { programData, originalFilename } = await loadProgram(userId)
+  const pw = requireSplitWorkout(
+    requireDay(programData, dayNumber),
+    split,
+    exerciseIndex,
+  )
+  // An explicit undefined clears the field; an absent key leaves it alone. The
+  // app sends partial patches (just `selectedMachine`, say) all the time.
+  Object.assign(
+    pw.exercises[exerciseIndex],
+    Object.fromEntries(
+      MACHINE_FIELDS.filter((k) => k in patch).map((k) => [k, patch[k]]),
+    ),
+  )
+  await saveProgram(userId, programData, originalFilename)
+  return { exerciseIndex }
 }
 
 export async function patchExerciseSets(

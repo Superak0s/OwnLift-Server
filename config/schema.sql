@@ -53,8 +53,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   completed_sets  INT             NOT NULL   DEFAULT 0,
   is_demo         TINYINT(1)      NOT NULL   DEFAULT 0,
   PRIMARY KEY (id),
-  KEY idx_sessions_user_id    (user_id),
-  KEY idx_sessions_start_time (start_time),
+  KEY idx_sessions_user_start       (user_id, start_time),
+  KEY idx_sessions_user_split_start (user_id, `split`, start_time),
   CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -79,10 +79,9 @@ CREATE TABLE IF NOT EXISTS set_timings (
   machine_name    VARCHAR(100)               DEFAULT NULL,   -- machine/setup the set was performed on
   created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_st_session_id    (session_id),
-  KEY idx_st_exercise_id   (exercise_id),
-  KEY idx_st_exercise_index (session_id, exercise_id),
-  KEY idx_st_created_at    (created_at),
+  KEY idx_st_exercise_id     (exercise_id),
+  KEY idx_st_exercise_index  (session_id, exercise_id),
+  KEY idx_st_session_created (session_id, created_at),
   CONSTRAINT fk_st_session  FOREIGN KEY (session_id)  REFERENCES sessions  (id) ON DELETE CASCADE,
   CONSTRAINT fk_st_exercise FOREIGN KEY (exercise_id) REFERENCES exercises (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -166,7 +165,8 @@ CREATE TABLE IF NOT EXISTS supplement_log (
   created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_sl_user_supplement (user_id, supplement_id),
-  KEY idx_sl_taken_at (taken_at),
+  KEY idx_sl_user_taken (user_id, taken_at),
+  KEY idx_sl_user_supp_taken (user_id, supplement_id, taken_at),
   CONSTRAINT fk_sl_supplement FOREIGN KEY (supplement_id) REFERENCES supplements (id) ON DELETE CASCADE,
   CONSTRAINT fk_sl_user       FOREIGN KEY (user_id)       REFERENCES users        (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -418,6 +418,7 @@ CREATE TABLE IF NOT EXISTS active_soreness (
   PRIMARY KEY (id),
   KEY idx_as_user_status (user_id, status),
   KEY idx_as_user_muscle (user_id, muscle_group),
+  KEY idx_as_user_logged (user_id, logged_at),
   CONSTRAINT fk_as_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -563,20 +564,3 @@ CREATE TABLE IF NOT EXISTS measurement_custom_values (
   CONSTRAINT fk_mcv_type FOREIGN KEY (type_id) REFERENCES measurement_custom_types (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- -----------------------------------------------------------------------------
--- progress_photos -- general body photos (distinct from progress_photos_muscle,
--- which carries the muscle-tagged set). Served at /api/tracking/photos.
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS progress_photos (
-  id              INT UNSIGNED    NOT NULL AUTO_INCREMENT,
-  user_id         INT UNSIGNED    NOT NULL,
-  photo_data      LONGBLOB        NOT NULL,
-  mime_type       VARCHAR(64)     NOT NULL   DEFAULT 'image/jpeg',
-  file_size       INT UNSIGNED    NOT NULL,
-  taken_at        DATETIME        NOT NULL,
-  note            TEXT                       DEFAULT NULL,
-  created_at      DATETIME        NOT NULL   DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  KEY idx_pp_user_taken (user_id, taken_at),
-  CONSTRAINT fk_pp_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

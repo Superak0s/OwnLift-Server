@@ -3,6 +3,7 @@ import http from "http"
 import os from "os"
 import cors from "cors"
 import helmet from "helmet"
+import compression from "compression"
 import rateLimit from "express-rate-limit"
 import { randomUUID } from "crypto"
 import { pathToFileURL } from "url"
@@ -25,6 +26,7 @@ import { testDatabaseConnection, pool } from "./config/database.js"
 import { createWsServer, closeWsServer } from "./ws/wsServer.js"
 import { registerRoutes } from "./routes.js"
 import { errorHandler } from "./middleware/errorHandler.js"
+import { authenticateToken } from "./middleware/auth.js"
 
 // Declared here rather than in express.d.ts to keep it co-located with the
 // only middleware that sets it. If other files need req.reqId, move it to
@@ -40,9 +42,14 @@ declare global {
 export const app = express()
 const PORT = process.env.PORT || 5000
 
-// Without this, req.ip resolves to the proxy's socket address for every
-// request, so express-rate-limit keys all clients into one shared bucket.
-app.set("trust proxy", 1)
+// Behind a reverse proxy, req.ip must come from X-Forwarded-For or
+// express-rate-limit keys every client into one shared bucket. Exposed
+// directly (the `docker run -p 5000:5000` path in the README) the header is
+// entirely caller-supplied, so trusting a hop there lets an attacker rotate
+// X-Forwarded-For and reset the auth limiter's bucket on every request.
+// Default to 0 — req.ip is then the unspoofable socket address — and let a
+// proxied deployment opt in with TRUST_PROXY_HOPS=1.
+app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS ?? 0))
 
 // This is a JSON API with no HTML views (public/ has no static assets today),
 // so lock CSP down to "load nothing" rather than the browser-page-oriented
@@ -65,12 +72,11 @@ app.use(
   }),
 )
 
-// Program uploads need a bigger cap (matches MAX_PROGRAM_JSON_BYTES in
-// programs.routes.ts) — mounted ahead of the global 50kb parser, which skips
-// bodies express.json has already parsed.
-app.use("/api/program/upload", express.json({ limit: "2mb" }))
-app.use(express.json({ limit: "50kb" }))
-app.use(express.static("public"))
+// Every response here is JSON, which gzips ~10x. Defaults are right for this
+// box: the 1kb threshold skips the small writes that dominate the request
+// count, and the built-in filter leaves already-compressed types alone, so
+// progress-photo bytes don't get run through zlib for nothing.
+app.use(compression())
 
 app.use((req: Request, _res: Response, next: NextFunction) => {
   req.reqId = randomUUID()
@@ -118,6 +124,19 @@ const limiter = (windowMs: number, max: number) =>
 app.use("/api/auth", limiter(15 * 60 * 1000, 20))
 app.use("/api", limiter(60 * 1000, 200))
 
+// Body parsing comes AFTER the limiters, so a flood is rejected before the
+// box pays to buffer and JSON.parse the payload. The program-upload cap is
+// also gated on authenticateToken: at 2 MB it's 40x the global limit, and an
+// anonymous caller has no business making the server parse that (the token
+// check fails on jwt.verify without touching the DB). Mounted ahead of the
+// global 50kb parser, which skips bodies express.json has already parsed.
+app.use(
+  "/api/program/upload",
+  authenticateToken,
+  express.json({ limit: "2mb" }),
+)
+app.use(express.json({ limit: "50kb" }))
+
 app.get("/healthz", async (_req: Request, res: Response) => {
   try {
     await pool.query("SELECT 1")
@@ -128,6 +147,12 @@ app.get("/healthz", async (_req: Request, res: Response) => {
 })
 
 registerRoutes(app)
+
+// After the routes, not before: mounted up front this stat()'d public/ for
+// every API request that would never match a file. Public URLs (the APK) are
+// unchanged — nothing under /api resolves here, so static only sees paths no
+// route claimed.
+app.use(express.static("public"))
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ success: false, error: "Route not found" })

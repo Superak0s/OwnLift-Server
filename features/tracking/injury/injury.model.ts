@@ -106,10 +106,11 @@ async function getInjuryById(
 
 export async function getAllInjuries(
   userId: number,
+  limit = 100,
 ): Promise<InjuryRecord[]> {
   const [rows] = await pool.execute<InjuryRecord[]>(
-    `SELECT ${INJURY_COLS} FROM injuries WHERE user_id = ? ORDER BY created_at DESC`,
-    [userId],
+    `SELECT ${INJURY_COLS} FROM injuries WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
+    [userId, limit],
   );
   return rows;
 }
@@ -117,20 +118,22 @@ export async function getAllInjuries(
 export async function getInjuriesByMuscle(
   userId: number,
   muscle: string,
+  limit = 100,
 ): Promise<InjuryRecord[]> {
   const [rows] = await pool.execute<InjuryRecord[]>(
-    `SELECT ${INJURY_COLS} FROM injuries WHERE user_id = ? AND muscle_group = ? ORDER BY created_at DESC`,
-    [userId, muscle],
+    `SELECT ${INJURY_COLS} FROM injuries WHERE user_id = ? AND muscle_group = ? ORDER BY created_at DESC LIMIT ?`,
+    [userId, muscle, limit],
   );
   return rows;
 }
 
 export async function getActiveInjuries(
   userId: number,
+  limit = 100,
 ): Promise<InjuryRecord[]> {
   const [rows] = await pool.execute<InjuryRecord[]>(
-    `SELECT ${INJURY_COLS} FROM injuries WHERE user_id = ? AND status IN ('active', 'recovering') ORDER BY created_at DESC`,
-    [userId],
+    `SELECT ${INJURY_COLS} FROM injuries WHERE user_id = ? AND status IN ('active', 'recovering') ORDER BY created_at DESC LIMIT ?`,
+    [userId, limit],
   );
   return rows;
 }

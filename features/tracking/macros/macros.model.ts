@@ -53,9 +53,12 @@ export async function getMacrosHistory(
   days = 30,
 ): Promise<MacrosEntry[]> {
   const [rows] = await pool.execute<MacrosIntakeRow[]>(
+    // Row guard on top of the date bound: `days` is clamped to 365, but a
+    // heavy logger still has thousands of entries in that window and nothing
+    // else caps the response.
     `SELECT ${MACROS_COLS} FROM macros_intake
      WHERE user_id = ? AND taken_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-     ORDER BY taken_at DESC`,
+     ORDER BY taken_at DESC LIMIT 2000`,
     [userId, days],
   )
   return rows
@@ -90,15 +93,10 @@ export async function setMacrosGoals(
 export async function deleteMacrosEntry(
   userId: number,
   entryId: number,
-): Promise<boolean | null> {
-  const [check] = await pool.execute<(RowDataPacket & { id: number })[]>(
-    "SELECT id FROM macros_intake WHERE id = ? AND user_id = ?",
+): Promise<boolean> {
+  const [result] = await pool.execute<ResultSetHeader>(
+    "DELETE FROM macros_intake WHERE id = ? AND user_id = ?",
     [entryId, userId],
   )
-  if (!check[0]) return null
-  const [result] = await pool.execute<ResultSetHeader>(
-    "DELETE FROM macros_intake WHERE id = ?",
-    [entryId],
-  )
-  return (result as ResultSetHeader).affectedRows > 0
+  return result.affectedRows > 0
 }

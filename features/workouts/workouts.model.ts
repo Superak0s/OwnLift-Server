@@ -146,10 +146,19 @@ async function findOrCreateExercise(
   primaryMuscles: string[] = [],
   secondaryMuscles: string[] = [],
 ): Promise<number> {
-  // Use LAST_INSERT_ID trick to get the id atomically whether this is an
-  // insert or a duplicate-key no-op. Avoids the INSERT IGNORE + SELECT race
-  // where two concurrent requests for the same new exercise could both see
-  // 0 rows from the follow-up SELECT.
+  // Hot path: this runs on every recorded set and the exercise almost always
+  // exists already, so try a plain read first. The INSERT below writes a row
+  // even when its ON DUPLICATE KEY branch is a no-op — a redo-log entry and a
+  // row lock per set, for nothing.
+  const [hit] = await pool.execute<RowDataPacket[]>(
+    `SELECT id FROM exercises WHERE name = ?`,
+    [name],
+  )
+  if (hit[0]) return hit[0].id
+
+  // First sighting of this name. The LAST_INSERT_ID trick returns the id
+  // atomically whether this is a real insert or a duplicate-key no-op, which
+  // is what covers two concurrent requests both missing the SELECT above.
   await pool.execute(
     `INSERT INTO exercises (name, primary_muscles, secondary_muscles) VALUES (?, ?, ?)
      ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
@@ -303,55 +312,34 @@ export async function updateSetTiming(
 
   const assignments: string[] = []
   const params: (string | number | null)[] = []
+  const set = (col: string, value: string | number | null) => {
+    assignments.push(`${col} = ?`)
+    params.push(value)
+  }
 
-  if (updates.exerciseName !== undefined) {
-    const exerciseId = await findOrCreateExercise(
-      updates.exerciseName,
-      updates.primaryMuscles ?? [],
-      updates.secondaryMuscles ?? [],
+  const u = updates
+  if (u.exerciseName !== undefined)
+    set(
+      "exercise_id",
+      await findOrCreateExercise(
+        u.exerciseName,
+        u.primaryMuscles ?? [],
+        u.secondaryMuscles ?? [],
+      ),
     )
-    assignments.push("exercise_id = ?")
-    params.push(exerciseId)
-  }
-  if (updates.weight !== undefined) {
-    assignments.push("weight = ?")
-    params.push(updates.weight)
-  }
-  if (updates.reps !== undefined) {
-    assignments.push("reps = ?")
-    params.push(updates.reps)
-  }
-  if (updates.note !== undefined) {
-    assignments.push("note = ?")
-    params.push(updates.note)
-  }
-  if (updates.isWarmup !== undefined) {
-    assignments.push("is_warmup = ?")
-    params.push(updates.isWarmup ? 1 : 0)
-  }
-  if (updates.rpe !== undefined) {
-    assignments.push("rpe = ?")
-    params.push(updates.rpe)
-  }
-  if (updates.machineName !== undefined) {
-    assignments.push("machine_name = ?")
-    params.push(updates.machineName)
-  }
-  if (updates.startTime !== undefined) {
-    assignments.push("start_time = ?")
-    params.push(formatDateForMySQL(updates.startTime))
-  }
-  if (updates.endTime !== undefined) {
-    assignments.push("end_time = ?")
-    params.push(formatDateForMySQL(updates.endTime))
-  }
-  if (updates.startTime !== undefined || updates.endTime !== undefined) {
-    const start = parseMySQLDate(
-      updates.startTime ?? (owned[0].startTime as string),
-    )
-    const end = parseMySQLDate(updates.endTime ?? (owned[0].endTime as string))
-    assignments.push("set_duration = ?")
-    params.push(Math.round((end.getTime() - start.getTime()) / 1000))
+  if (u.weight !== undefined) set("weight", u.weight)
+  if (u.reps !== undefined) set("reps", u.reps)
+  if (u.note !== undefined) set("note", u.note)
+  if (u.isWarmup !== undefined) set("is_warmup", u.isWarmup ? 1 : 0)
+  if (u.rpe !== undefined) set("rpe", u.rpe)
+  if (u.machineName !== undefined) set("machine_name", u.machineName)
+  if (u.startTime !== undefined)
+    set("start_time", formatDateForMySQL(u.startTime))
+  if (u.endTime !== undefined) set("end_time", formatDateForMySQL(u.endTime))
+  if (u.startTime !== undefined || u.endTime !== undefined) {
+    const start = parseMySQLDate(u.startTime ?? (owned[0].startTime as string))
+    const end = parseMySQLDate(u.endTime ?? (owned[0].endTime as string))
+    set("set_duration", Math.round((end.getTime() - start.getTime()) / 1000))
   }
 
   if (assignments.length > 0) {
@@ -456,8 +444,13 @@ export async function getSessionHistory(
   limit = 30,
   includeTimings = false,
 ): Promise<Session[]> {
+  // setCount was a correlated (SELECT COUNT(*) FROM set_timings ...) — one
+  // index scan per returned row, up to 365 of them on a single request.
+  // sessions.completed_sets is incremented inside the same transaction that
+  // inserts the set (recordSetTiming) and nothing ever deletes a set, so the
+  // column already holds exactly this number.
   let q = `SELECT ${SESSION_COLS}, u.name AS userName, u.username,
-      (SELECT COUNT(*) FROM set_timings WHERE session_id = s.id) AS setCount
+      s.completed_sets AS setCount
      FROM sessions s JOIN users u ON s.user_id = u.id
      WHERE s.user_id = ?`
   const params: any[] = [userId]
@@ -566,17 +559,26 @@ export async function endStaleSessions(
   thresholdMinutes: number,
 ): Promise<number> {
   const [result] = await pool.execute<ResultSetHeader>(
+    // Correlated, not a derived table: grouping all of set_timings by
+    // session_id materialised the entire table every run, forever, to find the
+    // handful of rows where end_time IS NULL. This way the lookup runs only
+    // for open sessions and rides the session_id index prefix.
+    //
+    // total_duration reads s.end_time set on the line above it — MySQL
+    // evaluates UPDATE assignments left to right and later ones see the new
+    // values. That is MySQL-specific, and the reason the subquery isn't
+    // repeated a third time here.
     `UPDATE sessions s
-     LEFT JOIN (
-       SELECT session_id, MAX(end_time) AS last_end
-       FROM set_timings GROUP BY session_id
-     ) st ON st.session_id = s.id
-     SET s.end_time = COALESCE(st.last_end, s.start_time),
-         s.total_duration = TIMESTAMPDIFF(
-           SECOND, s.start_time, COALESCE(st.last_end, s.start_time)
-         )
+     SET s.end_time = COALESCE(
+           (SELECT MAX(st.end_time) FROM set_timings st WHERE st.session_id = s.id),
+           s.start_time
+         ),
+         s.total_duration = TIMESTAMPDIFF(SECOND, s.start_time, s.end_time)
      WHERE s.end_time IS NULL
-       AND COALESCE(st.last_end, s.start_time) < (NOW() - INTERVAL ? MINUTE)`,
+       AND COALESCE(
+             (SELECT MAX(st.end_time) FROM set_timings st WHERE st.session_id = s.id),
+             s.start_time
+           ) < (NOW() - INTERVAL ? MINUTE)`,
     [thresholdMinutes],
   )
   return result.affectedRows

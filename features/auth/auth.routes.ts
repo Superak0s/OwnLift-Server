@@ -17,6 +17,7 @@ import {
   findUserByCredentials,
   findUserById,
   verifyPassword,
+  getDummyPasswordHash,
   generateToken,
   getTokenVersion,
   deleteUserAccount,
@@ -56,11 +57,16 @@ router.post("/signup", validateRegistration, async (req: Request, res: Response)
 router.post("/signin", validateLogin, async (req: Request, res: Response) => {
   const { username, password } = req.body
 
+  // Always run bcrypt, even when the username doesn't exist, so the response
+  // time doesn't reveal which accounts are real. The !user check still gates
+  // the outcome, so a password that happens to match the dummy hash is not a
+  // way in.
   const user = await findUserByCredentials(username)
-  if (!user) throw new UnauthorizedError("Invalid credentials")
-
-  const isValid = await verifyPassword(password, user.password_hash!)
-  if (!isValid) throw new UnauthorizedError("Invalid credentials")
+  const isValid = await verifyPassword(
+    password,
+    user?.password_hash ?? getDummyPasswordHash(),
+  )
+  if (!user || !isValid) throw new UnauthorizedError("Invalid credentials")
 
   const token = generateToken(user.id, await getTokenVersion(user.id))
 

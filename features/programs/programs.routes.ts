@@ -12,6 +12,8 @@ import {
   renameExercise,
   addExercise,
   patchExerciseSets,
+  patchExerciseMachine,
+  MACHINE_FIELDS,
 } from "./programs.model.js"
 
 const router: Router = Router()
@@ -41,7 +43,11 @@ router.get("/", async (req: Request, res: Response) => {
  * shape and persists it — no file handling on the server anymore. Size is
  * capped by the 2 MB express.json parser mounted on this path in server.ts.
  */
-router.post("/upload", async (req: Request, res: Response) => {
+// denyTrainer: upsertProgram is ON DUPLICATE KEY UPDATE program_data, a whole
+// replace rather than a merge, so without this a trainer could post an empty
+// weeklyPlan with X-Trainee-Id and erase the trainee's program outright. There
+// is no versioning to recover it from.
+router.post("/upload", denyTrainer, async (req: Request, res: Response) => {
   const { weeklyPlan, originalFilename } = req.body
 
   if (
@@ -161,6 +167,38 @@ router.patch("/exercise/sets", async (req: Request, res: Response) => {
     message: `Added ${additionalSets} sets to exercise at index ${result.exerciseIndex}`,
     newSetCount: result.newSetCount,
   })
+})
+
+// Deliberately NOT denyTrainer: this is the granular alternative to
+// /upload for the one program edit trainer mode actually performs. It
+// rewrites five machine keys on one exercise rather than replacing the whole
+// program, so a trainer working from a stale copy can't clobber the trainee.
+router.patch("/exercise/machine", async (req: Request, res: Response) => {
+  const { dayNumber, exerciseIndex, patch } = req.body
+  const split = req.body.split
+
+  if (dayNumber == null || !split || exerciseIndex == null || !patch) {
+    throw new ValidationError(
+      "dayNumber, split, exerciseIndex, and patch are required",
+    )
+  }
+  const unknown = Object.keys(patch).filter(
+    (k) => !(MACHINE_FIELDS as readonly string[]).includes(k),
+  )
+  if (unknown.length)
+    throw new ValidationError(
+      `patch may only contain ${MACHINE_FIELDS.join(", ")}; got ${unknown.join(", ")}`,
+    )
+
+  const result = await patchExerciseMachine(
+    req.user!.id,
+    dayNumber,
+    split,
+    exerciseIndex,
+    patch,
+  )
+
+  res.json({ success: true, exerciseIndex: result.exerciseIndex })
 })
 
 export default router

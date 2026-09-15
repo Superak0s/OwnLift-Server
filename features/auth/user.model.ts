@@ -96,7 +96,6 @@ const USER_OWNED_TABLES = [
   "measurement_custom_values",
   "measurement_custom_types",
   "supplements", // cascades supplement_log
-  "progress_photos",
   "progress_photos_muscle",
   "macros_goals",
   "macros_intake",
@@ -105,8 +104,16 @@ const USER_OWNED_TABLES = [
 
 // Photo rows carry a LONGBLOB each; exporting the bytes would turn a JSON
 // export into hundreds of megabytes. The metadata goes out, the images don't.
+/**
+ * Per-table ceiling on the export. Nothing should legitimately reach it —
+ * hydration, the fastest-growing table here, runs ~2,500 rows/year — but this
+ * endpoint builds every row of twenty tables into one object, stringifies it,
+ * then gzips that, with all three live in heap at once. Uncapped it is the
+ * single request most likely to OOM a small box.
+ */
+const EXPORT_ROW_CAP = 50_000
+
 const EXPORT_COLUMNS: Record<string, string> = {
-  progress_photos: "id, mime_type, file_size, taken_at, note, created_at",
   progress_photos_muscle:
     "id, mime_type, file_size, taken_at, notes, angle, custom_side_name, created_at",
 }
@@ -129,7 +136,7 @@ export async function exportUserData(
   for (const table of USER_OWNED_TABLES) {
     const columns = EXPORT_COLUMNS[table] ?? "*"
     const [rows] = await pool.execute<RowDataPacket[]>(
-      `SELECT ${columns} FROM ${table} WHERE user_id = ?`,
+      `SELECT ${columns} FROM ${table} WHERE user_id = ? LIMIT ${EXPORT_ROW_CAP}`,
       [userId],
     )
     data[table] = rows

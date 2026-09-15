@@ -52,7 +52,11 @@ router.get("/", async (req: Request, res: Response) => {
 })
 
 router.get("/group/:muscle", async (req: Request, res: Response) => {
-  const photos = await getPhotosByMuscle(req.user!.id, String(req.params.muscle))
+  const photos = await getPhotosByMuscle(
+    req.user!.id,
+    String(req.params.muscle),
+    queryLimit(req, { def: 100, max: 500 }),
+  )
   res.json({ success: true, data: photos })
 })
 
@@ -63,6 +67,10 @@ router.get("/:id/image", async (req: Request, res: Response) => {
   const result = await getPhotoImage(req.user!.id, photoId)
 
   res.set("Content-Type", result.mimeType)
+  // mime_type is constrained to an image allowlist at write time and helmet
+  // sends nosniff globally, so this is belt-and-braces: it pins how a browser
+  // treats the response rather than leaving it to content sniffing.
+  res.set("Content-Disposition", "inline")
   res.set("Cache-Control", `private, max-age=${86_400}`)
   res.send(result.photoData)
 })
