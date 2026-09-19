@@ -46,16 +46,14 @@ describe("analytics routes", () => {
     expect(res.body.totalSessions).toBe(1)
     expect(res.body.totalSetsCompleted).toBe(2)
     expect(res.body.totalVolume).toBe(80 * 8 + 90 * 10)
-    expect(res.body.averageTimeBetweenSets).toBeGreaterThan(0)
     expect(res.body.firstSession).toBeTruthy()
     expect(res.body.lastSession).toBeTruthy()
   })
 
-  it("filters by day and defaults missing stats to 120s", async () => {
+  it("filters by day", async () => {
     const day2 = await request(app).get("/api/analytics?dayNumber=2").set(auth(u.token))
     expect(day2.status).toBe(200)
     expect(day2.body.totalSessions).toBe(0)
-    expect(day2.body.averageTimeBetweenSets).toBe(120)
 
     const day1 = await request(app).get("/api/analytics?dayNumber=1").set(auth(u.token))
     expect(day1.body.totalSessions).toBe(1)

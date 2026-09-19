@@ -20,8 +20,8 @@ router.get("/", authenticateToken, applyTrainerContext, async (req: Request, res
   // the user's entire history on every dashboard open; 365 covers the default
   // dashboard and older app builds that send no ?days=. Ceiling is 10 years,
   // which is "all time" for any real user: the aggregated columns (weight,
-  // reps, set_duration, rest_time) are in no index, so a wider window means a
-  // clustered-index lookup per set row and multi-second waits on a small box.
+  // reps) are in no index, so a wider window means a clustered-index lookup
+  // per set row and multi-second waits on a small box.
   const days = queryLimit(req, { def: 365, max: 3650, key: "days" })
 
   const analytics = await getAnalytics(
@@ -35,10 +35,7 @@ router.get("/", authenticateToken, applyTrainerContext, async (req: Request, res
     success: true,
     totalSessions: analytics.total_sessions || 0,
     totalSetsCompleted: analytics.total_sets || 0,
-    averageTimeBetweenSets: analytics.avg_time_between_sets || 120,
     totalVolume: Math.round(analytics.total_volume || 0),
-    averageRestTime: Math.round(analytics.avg_rest_time || 0),
-    averageSetDuration: Math.round(analytics.avg_set_duration || 0),
     firstSession: analytics.first_session,
     lastSession: analytics.last_session,
   })
