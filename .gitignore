@@ -5,12 +5,8 @@ yarn-debug.log*
 yarn-error.log*
 *.log
 
-# Uploads
-uploads/
-
 # Environment variables
 .env
-.env.local
 
 # OS files
 .DS_Store
@@ -26,7 +22,6 @@ Thumbs.db
 # Build
 dist/
 build/
-*.apk
 
 # SonarQube scanner cache
 .scannerwork/
@@ -34,6 +29,4 @@ build/
 # npm lockfile (this repo standardizes on pnpm)
 package-lock.json
 
-CLAUDE.md
-.claude/
 coverage/

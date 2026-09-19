@@ -47,6 +47,8 @@ function requireMetricKeyShape(metric: string): void {
     throw new ValidationError(
       `Invalid metric key: ${metric}. Use lowercase letters, digits and ` +
         `underscores, starting with a letter, up to 64 characters.`,
+      null,
+      "METRIC_UNKNOWN",
     )
 }
 
@@ -73,8 +75,14 @@ const ENTRY_COLS = `id, metric, value, measured_at AS measuredAt, note,
  * the circumferences it was computed from, and those circumferences then appear
  * on their own charts for free.
  *
- * Returns the id of the first row inserted — the handle the delete endpoints use
- * to find the group again.
+ * Writing the same metric at the same instant twice overwrites rather than
+ * duplicating (uq_m_user_metric_at). Two devices that were both offline for a
+ * week replay the same days on reconnect, and the user has no way to tell which
+ * of the resulting twin points is real — a re-sync has to be a no-op.
+ *
+ * Returns the lowest id in the session — the handle the delete endpoints use to
+ * find the group again. It is read back rather than taken from insertId, which
+ * an upsert only sets for rows it actually inserted.
  */
 export async function logMetrics(
   userId: number,
@@ -92,12 +100,20 @@ export async function logMetrics(
   }
 
   const ts = formatDateForMySQL(measuredAt ? measuredAt : new Date())
-  const [result] = await pool.execute<ResultSetHeader>(
+  await pool.execute<ResultSetHeader>(
     `INSERT INTO measurements (user_id, metric, value, measured_at, note) VALUES
-     ${samples.map(() => "(?, ?, ?, ?, ?)").join(", ")}`,
+     ${samples.map(() => "(?, ?, ?, ?, ?)").join(", ")}
+     ON DUPLICATE KEY UPDATE value = VALUES(value), note = VALUES(note)`,
     samples.flatMap((s) => [userId, s.metric, s.value, ts, note ?? null]),
   )
-  return result.insertId
+
+  const [rows] = await pool.execute<(RowDataPacket & { id: number })[]>(
+    `SELECT MIN(id) AS id FROM measurements
+     WHERE user_id = ? AND measured_at = ?
+       AND metric IN (${samples.map(() => "?").join(", ")})`,
+    [userId, ts, ...samples.map((s) => s.metric)],
+  )
+  return rows[0].id
 }
 
 export async function getMetricHistory(
@@ -243,7 +259,10 @@ export async function createMetricDefinition(
     )
   } catch (err) {
     if ((err as { errno?: number }).errno === 1062)
-      throw new ConflictError(`Metric ${keyName} already exists`)
+      throw new ConflictError(
+        `Metric ${keyName} already exists`,
+        "DUPLICATE_METRIC",
+      )
     throw err
   }
   const [rows] = await pool.execute<MetricDefinition[]>(
@@ -269,15 +288,26 @@ export async function getMetricDefinitions(
  * anything else needs a metric_definitions row, which is what keeps
  * `measurements.metric` from becoming a free-text dumping ground.
  */
-export async function requireKnownMetric(
+export async function requireKnownMetrics(
+  userId: number,
+  metrics: readonly string[],
+): Promise<void> {
+  const custom = metrics.filter((m) => !BUILT_IN_METRICS.includes(m))
+  if (!custom.length) return
+  custom.forEach(requireMetricKeyShape)
+
+  const [rows] = await pool.execute<(RowDataPacket & { key_name: string })[]>(
+    `SELECT key_name FROM metric_definitions
+     WHERE user_id = ? AND key_name IN (${custom.map(() => "?").join(", ")})`,
+    [userId, ...custom],
+  )
+  const defined = new Set(rows.map((r) => r.key_name))
+  const unknown = custom.find((m) => !defined.has(m))
+  if (unknown)
+    throw new ValidationError(`Unknown metric: ${unknown}`, null, "METRIC_UNKNOWN")
+}
+
+export const requireKnownMetric = (
   userId: number,
   metric: string,
-): Promise<void> {
-  if (BUILT_IN_METRICS.includes(metric)) return
-  requireMetricKeyShape(metric)
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT 1 FROM metric_definitions WHERE user_id = ? AND key_name = ?`,
-    [userId, metric],
-  )
-  if (!rows[0]) throw new ValidationError(`Unknown metric: ${metric}`)
-}
+): Promise<void> => requireKnownMetrics(userId, [metric])

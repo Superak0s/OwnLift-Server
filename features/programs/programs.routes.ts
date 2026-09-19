@@ -1,14 +1,13 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
 import { applyTrainerContext, denyTrainer } from "@/middleware/trainerContext.js"
-import {
-  NotFoundError,
-  ValidationError,
-} from "@/middleware/errorHandler.js"
+import { ValidationError } from "@/middleware/errorHandler.js"
 import {
   getProgramByUserId,
   upsertProgram,
   deleteProgramByUserId,
+  getProgramCurrentDay,
+  setProgramCurrentDay,
   renameExercise,
   addExercise,
   patchExerciseSets,
@@ -22,7 +21,13 @@ router.use(authenticateToken, applyTrainerContext)
 
 router.get("/", async (req: Request, res: Response) => {
   const result = await getProgramByUserId(req.user!.id)
-  if (!result) throw new NotFoundError("Program")
+  // Not an error: every user has no program until they save one, and the client
+  // reads this 404 as "none yet". Answered here rather than thrown so it never
+  // reaches errorHandler's log.
+  if (!result) {
+    res.status(404).json({ success: false, error: "Program not found" })
+    return
+  }
 
   const { programData, originalFilename, uploadedAt } = result
   res.json({
@@ -33,6 +38,31 @@ router.get("/", async (req: Request, res: Response) => {
     split: programData.split,
     days: programData.days,
   })
+})
+
+/**
+ * The day pointer is a scalar the app syncs across devices, independent of the
+ * program body — reading it does not require pulling the whole program back.
+ * 200 with `null` rather than 404 when there is no program: "no day set" and
+ * "no program" are the same fallback on the client.
+ */
+router.get("/current-day", async (req: Request, res: Response) => {
+  res.json({
+    success: true,
+    currentDay: await getProgramCurrentDay(req.user!.id),
+  })
+})
+
+router.put("/current-day", async (req: Request, res: Response) => {
+  const { currentDay } = req.body
+  // ck_pd_day allows day_number 0, but no client ever uploads one, so the
+  // range check stays at >= 1. setProgramCurrentDay additionally proves the
+  // day exists — the range alone let a pointer outlive the day it named.
+  if (!Number.isInteger(currentDay) || currentDay < 1)
+    throw new ValidationError("currentDay must be an integer >= 1")
+
+  await setProgramCurrentDay(req.user!.id, currentDay)
+  res.json({ success: true, currentDay })
 })
 
 /**
@@ -79,7 +109,11 @@ router.delete("/", denyTrainer, async (req: Request, res: Response) => {
   res.json({ success: true, message: "Program deleted" })
 })
 
-router.patch("/exercise/rename", async (req: Request, res: Response) => {
+// denyTrainer: a rename re-points the slot at a different `exercises` row and
+// backfills that shared row's muscle groups, so it changes how the trainee's
+// own history reads. Adding an exercise and adjusting set counts stay open to
+// trainers — those are the coaching edits the grant exists for.
+router.patch("/exercise/rename", denyTrainer, async (req: Request, res: Response) => {
   const {
     dayNumber,
     exerciseIndex,
@@ -147,7 +181,7 @@ router.patch("/exercise/sets", async (req: Request, res: Response) => {
     dayNumber == null ||
     !split ||
     exerciseIndex == null ||
-    !additionalSets
+    additionalSets == null
   ) {
     throw new ValidationError(
       "dayNumber, split, exerciseIndex, and additionalSets are required",

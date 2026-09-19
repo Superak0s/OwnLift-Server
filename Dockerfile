@@ -23,7 +23,6 @@ COPY package.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
-RUN mkdir -p public
 RUN printf '#!/bin/sh\nexec node /app/dist/ownlift.js "$@"\n' > /usr/local/bin/ownlift && chmod +x /usr/local/bin/ownlift
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 RUN chown -R appuser:appgroup /app
@@ -31,6 +30,8 @@ USER appuser
 
 EXPOSE 5000
 ENV NODE_ENV=production
-HEALTHCHECK --interval=30s --timeout=3s CMD node -e "require('http').get('http://localhost:5000/healthz', r => process.exit(r.statusCode === 200 ? 0 : 1))"
+# start-period: first boot provisions the whole schema (CREATE DATABASE, ~30
+# CREATE TABLE, migrations), during which the container would flap unhealthy.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=30s CMD node -e "require('http').get('http://localhost:5000/healthz', r => process.exit(r.statusCode === 200 ? 0 : 1))"
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "--env-file-if-exists=.env", "dist/server.js"]

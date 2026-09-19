@@ -28,6 +28,22 @@ describe("menstrual routes", () => {
     expect(stats.status).toBe(200)
   })
 
+  // The app's menstrual tab previews stats under lengths the user is editing
+  // before it saves them to /api/settings.
+  it("previews stats under overridden cycle lengths", async () => {
+    const overridden = await request(app)
+      .get("/api/tracking/menstrual/stats?periodDays=7&cycleLengthDays=40")
+      .set(auth(u.token))
+    expect(overridden.status).toBe(200)
+    // Only one entry, so there is no observed average to outrank the override.
+    expect(overridden.body.data.averageCycleLength).toBe(40)
+
+    const bad = await request(app)
+      .get("/api/tracking/menstrual/stats?cycleLengthDays=0")
+      .set(auth(u.token))
+    expect(bad.status).toBe(400)
+  })
+
   it("closes a cycle with PATCH", async () => {
     const patched = await request(app)
       .patch(`/api/tracking/menstrual/${entryId}`)

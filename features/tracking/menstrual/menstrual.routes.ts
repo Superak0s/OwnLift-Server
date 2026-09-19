@@ -1,7 +1,11 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
 import { NotFoundError, ValidationError } from "@/middleware/errorHandler.js"
-import { queryLimit, parseIntParam } from "@/middleware/validation.js"
+import {
+  queryLimit,
+  parseIntParam,
+  parseBackdatedTimestamp,
+} from "@/middleware/validation.js"
 import {
   logMenstrualCycle,
   getMenstrualHistory,
@@ -17,7 +21,14 @@ router.use(authenticateToken)
 router.post("/", async (req: Request, res: Response) => {
   const { cycleStart, symptoms } = req.body
   if (!cycleStart) throw new ValidationError("Cycle start date is required")
-  const entry = await logMenstrualCycle(req.user!.id, cycleStart, symptoms)
+  // A future cycle_start becomes the "last" cycle and makes every phase
+  // estimate nonsense, so a typo'd year is rejected like every other
+  // backdated tracking timestamp.
+  const entry = await logMenstrualCycle(
+    req.user!.id,
+    parseBackdatedTimestamp(cycleStart, "cycleStart")!,
+    symptoms,
+  )
   res.status(201).json({ success: true, data: entry })
 })
 
@@ -29,8 +40,25 @@ router.get("/", async (req: Request, res: Response) => {
   res.json({ success: true, data: history })
 })
 
+/**
+ * ?periodDays / ?cycleLengthDays preview the stats under lengths the user is
+ * editing but hasn't saved to /api/settings yet. Absent means "use the saved
+ * ones"; present but malformed is a client bug, not a silent fallback.
+ */
 router.get("/stats", async (req: Request, res: Response) => {
-  res.json({ success: true, data: await getCycleStats(req.user!.id) })
+  const optionalDays = (raw: unknown, field: string): number | undefined => {
+    if (raw === undefined) return undefined
+    const n = Number(raw)
+    if (!Number.isInteger(n) || n < 1)
+      throw new ValidationError(`${field} must be a positive integer`)
+    return n
+  }
+
+  const data = await getCycleStats(req.user!.id, {
+    periodDays: optionalDays(req.query.periodDays, "periodDays"),
+    cycleLengthDays: optionalDays(req.query.cycleLengthDays, "cycleLengthDays"),
+  })
+  res.json({ success: true, data })
 })
 
 /** The period ends and the symptom list grows after the cycle is logged. */

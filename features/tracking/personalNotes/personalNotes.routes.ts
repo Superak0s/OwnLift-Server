@@ -5,7 +5,6 @@ import { NotFoundError } from "@/middleware/errorHandler.js"
 import {
   createNote,
   getNotesByMuscle,
-  updateNote,
   deleteNote,
 } from "./personalNotes.model.js"
 
@@ -27,12 +26,6 @@ router.get("/muscle/:muscleGroup", async (req: Request, res: Response) => {
     queryLimit(req, { def: 100, max: 500 }),
   )
   res.json({ success: true, data: notes })
-})
-
-router.patch("/:id", async (req: Request, res: Response) => {
-  const id = parseIntParam(String(req.params.id), "note ID")
-  const note = await updateNote(req.user!.id, id, req.body.content)
-  res.json({ success: true, data: note })
 })
 
 router.delete("/:id", async (req: Request, res: Response) => {

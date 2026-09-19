@@ -2,6 +2,7 @@ import mysql, { Pool, PoolConnection } from "mysql2/promise";
 import fs from "fs";
 import path from "path";
 import type { RowDataPacket } from "mysql2/promise";
+import type { Connection as CoreConnection } from "mysql2";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { logger } from "../utils/logger.js";
@@ -47,8 +48,23 @@ export const pool: Pool = mysql.createPool({
 // the CURRENT_TIMESTAMP column defaults sit at the box's local offset and
 // "today" comparisons drift by that many hours. Pinned here rather than left
 // to the operator's my.cnf, which usually says SYSTEM.
-pool.on("connection", (connection) => {
-  connection.query("SET time_zone = '+00:00'")
+// Callback form deliberately: pool.on("connection") hands over the *core*
+// (callback-style) connection, and a callback-less query there returns a Query
+// EventEmitter that does `emit("error", err)` on failure. With no listener that
+// throws out of the emitter as an uncaughtException, which shutdown()s the
+// process — so a MySQL restart while the pool was opening a connection killed
+// the server. Passing a callback routes the error to it instead.
+// The typings say PoolConnection (promise flavour); the runtime hands over the
+// callback-style core connection, which is the whole point here.
+pool.on("connection", (conn) => {
+  const connection = conn as unknown as CoreConnection
+  connection.query("SET time_zone = '+00:00'", (err) => {
+    if (err)
+      logger.warn(
+        "Could not pin connection time_zone to UTC:",
+        (err as Error).message,
+      );
+  });
 });
 
 /**
@@ -89,8 +105,10 @@ async function createDatabaseIfNotExists(): Promise<void> {
     port: Number(process.env.DB_PORT) || 3306,
   });
   try {
+    // DB_NAME is the operator's own, not user input, but an unescaped backtick
+    // turns a typo into a confusing syntax error at boot instead of a clear one.
     await connection.execute(
-      `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+      `CREATE DATABASE IF NOT EXISTS \`${dbName.replace(/`/g, "``")}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
     );
     logger.info(`✓ Database '${dbName}' verified/created`);
   } finally {
@@ -98,6 +116,13 @@ async function createDatabaseIfNotExists(): Promise<void> {
   }
 }
 
+// Naive: strips comments (including ones inside string literals) and splits on
+// every `;`. Correct for schema.sql and every migration here, all of which are
+// plain DDL. A statement containing a semicolon in a string, a DELIMITER block,
+// a trigger or a stored procedure will be mangled — write those as their own
+// file with a real parser, or don't write them.
+// ponytail: naive splitter, swap for a real tokenizer only if a migration ever
+// needs a semicolon inside a literal.
 function parseSQLStatements(sql: string): string[] {
   return sql
     .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -200,8 +225,13 @@ async function runMigrations(isFresh: boolean): Promise<void> {
         try {
           await connection.execute(stmt);
         } catch (err) {
-          if (!ALREADY_APPLIED.has((err as { code?: string }).code ?? ""))
-            throw err;
+          if (ALREADY_APPLIED.has((err as { code?: string }).code ?? "")) continue;
+          // Without the filename the operator sees a bare MySQL error from a
+          // box that won't boot, and no hint that a migration was even running.
+          throw new Error(
+            `migration ${file} failed on "${stmt.slice(0, 120)}": ${(err as Error).message}`,
+            { cause: err },
+          );
         }
       }
       await connection.execute(`INSERT INTO _migrations (name) VALUES (?)`, [

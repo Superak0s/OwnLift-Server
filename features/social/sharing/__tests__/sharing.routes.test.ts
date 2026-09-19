@@ -40,6 +40,8 @@ describe("sharing routes", () => {
       .send({ friendId: b.user.id, permissionType: "program" })
     expect(programNoPayload.status).toBe(400)
 
+    // This route carries the same document /api/program/upload does, so it gets
+    // the same 2 MB parser: half a megabyte of program is accepted...
     const bigPayload = await request(app)
       .post("/api/sharing/permissions")
       .set(auth(a.token))
@@ -48,8 +50,18 @@ describe("sharing routes", () => {
         permissionType: "program",
         payload: { programData: "x".repeat(512 * 1024 + 1) },
       })
-    // express.json's 50kb body limit rejects it before the route sees it
-    expect(bigPayload.status).toBe(413)
+    expect(bigPayload.status).toBe(201)
+
+    // ...and the ceiling still exists above it.
+    const hugePayload = await request(app)
+      .post("/api/sharing/permissions")
+      .set(auth(a.token))
+      .send({
+        friendId: b.user.id,
+        permissionType: "program",
+        payload: { programData: "x".repeat(2 * 1024 * 1024 + 1) },
+      })
+    expect(hugePayload.status).toBe(413)
 
     const grant = await request(app)
       .post("/api/sharing/permissions")
@@ -57,11 +69,12 @@ describe("sharing routes", () => {
       .send({ friendId: b.user.id, permissionType: "history" })
     expect(grant.status).toBe(201)
 
+    // history + the program grant the big-payload calls left behind.
     const granted = await request(app).get("/api/sharing/permissions/granted").set(auth(a.token))
-    expect(granted.body.count).toBe(1)
+    expect(granted.body.permissions).toHaveLength(2)
 
     const received = await request(app).get("/api/sharing/permissions/received").set(auth(b.token))
-    expect(received.body.count).toBe(1)
+    expect(received.body.permissions).toHaveLength(2)
 
     const revoke = await request(app)
       .delete(`/api/sharing/permissions/${grant.body.permissionId}`)

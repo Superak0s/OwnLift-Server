@@ -53,14 +53,28 @@ export async function sendFriendRequest(
   }
 
   const [existing] = await pool.execute<RowDataPacket[]>(
-    `SELECT status FROM friendships
+    `SELECT id, status, requested_by AS requestedBy FROM friendships
      WHERE user_id = LEAST(?, ?) AND friend_id = GREATEST(?, ?)`,
     [fromUserId, toUserId, fromUserId, toUserId],
   )
+  const row = existing[0]
+  // All three are 409s that only prose told apart. The incoming case is the one
+  // that matters: the caller lost the race, and the fix is to accept the
+  // request they already have — so hand back the id they need to do it with.
+  if (row?.status === "accepted")
+    throw new ConflictError("Already friends", "ALREADY_FRIENDS", {
+      friendshipId: row.id,
+    })
+  if (row && row.requestedBy !== fromUserId)
+    throw new ConflictError(
+      "This user has already sent you a friend request — accept it instead",
+      "REQUEST_INCOMING",
+      { friendshipId: row.id },
+    )
   throw new ConflictError(
-    existing[0]?.status === "accepted"
-      ? "Already friends"
-      : "Friend request already pending",
+    "Friend request already pending",
+    "REQUEST_PENDING",
+    row ? { friendshipId: row.id } : null,
   )
 }
 
@@ -76,19 +90,33 @@ export async function acceptFriendRequest(
        AND status = 'pending'`,
     [friendshipId, userId, userId],
   )
-  if (result.affectedRows === 0) throw new NotFoundError("Friend request")
+  if (result.affectedRows === 0) {
+    // Already accepted — a double-tapped button or a retried sync. Reporting
+    // "not found" for something that just succeeded is worse than a no-op.
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT id FROM friendships
+       WHERE id = ? AND ? IN (user_id, friend_id) AND status = 'accepted'`,
+      [friendshipId, userId],
+    )
+    if (!rows.length) throw new NotFoundError("Friend request")
+  }
   return true
 }
 
+/**
+ * Reject an incoming request — or cancel one you sent. Both are "delete this
+ * pending row", and without the cancel a request sent to the wrong username
+ * was permanent: uq_friendship blocks a re-request and POST /request answers
+ * 409 forever, so the only escape was blocking the person.
+ */
 export async function rejectFriendRequest(
   userId: number,
   friendshipId: number,
 ): Promise<boolean> {
   const [result] = await pool.execute<ResultSetHeader>(
     `DELETE FROM friendships
-     WHERE id = ? AND ? IN (user_id, friend_id) AND requested_by <> ?
-       AND status = 'pending'`,
-    [friendshipId, userId, userId],
+     WHERE id = ? AND ? IN (user_id, friend_id) AND status = 'pending'`,
+    [friendshipId, userId],
   )
   if (result.affectedRows === 0) throw new NotFoundError("Friend request")
   return true
@@ -123,6 +151,25 @@ export async function removeFriend(
     await conn.execute(
       `DELETE FROM sharing_permissions WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)`,
       [userId, friendId, friendId, userId],
+    )
+    // acceptInvite re-checks recipient, status and expiry but not friendship,
+    // so an invite sent just before the unfriend could still be accepted
+    // inside its 120s TTL — a joint session between two non-friends. blockUser
+    // already did this; removeFriend didn't.
+    await conn.execute(
+      `DELETE FROM joint_session_invites WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)`,
+      [userId, friendId, friendId, userId],
+    )
+    // A joint session is stateful — unlike live spectating, which re-runs the
+    // friendship join on every broadcast — so severing the relationship has to
+    // end it explicitly. Without this the pair kept streaming each other's
+    // exercise names over WS after a block, with no route to stop it.
+    await conn.execute(
+      `UPDATE joint_sessions js SET js.status = 'ended'
+       WHERE js.status = 'active'
+         AND (SELECT COUNT(*) FROM joint_session_participants p
+               WHERE p.joint_session_id = js.id AND p.user_id IN (?, ?)) = 2`,
+      [userId, friendId],
     )
     await conn.commit()
     return true
@@ -284,6 +331,17 @@ export async function blockUser(
       `DELETE FROM joint_session_invites WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)`,
       [blockerId, blockedId, blockedId, blockerId],
     )
+    // A joint session is stateful — unlike live spectating, which re-runs the
+    // friendship join on every broadcast — so severing the relationship has to
+    // end it explicitly. Without this the pair kept streaming each other's
+    // exercise names over WS after a block, with no route to stop it.
+    await conn.execute(
+      `UPDATE joint_sessions js SET js.status = 'ended'
+       WHERE js.status = 'active'
+         AND (SELECT COUNT(*) FROM joint_session_participants p
+               WHERE p.joint_session_id = js.id AND p.user_id IN (?, ?)) = 2`,
+      [blockerId, blockedId],
+    )
     await conn.commit()
   } catch (err) {
     await conn.rollback()
@@ -333,6 +391,20 @@ export async function reportUser(
   if (reporterId === reportedId) {
     throw new ValidationError("Cannot report yourself")
   }
+  // Nothing but the global 200/min limiter stood between one user and filling
+  // user_reports, which the operator reads by hand. One report per pair per
+  // day is plenty for a self-hosted instance.
+  const [recent] = await pool.execute<RowDataPacket[]>(
+    `SELECT id FROM user_reports
+     WHERE reporter_id = ? AND reported_id = ?
+       AND created_at > NOW() - INTERVAL 1 DAY LIMIT 1`,
+    [reporterId, reportedId],
+  )
+  if (recent.length)
+    throw new ConflictError(
+      "You have already reported this user today",
+      "REPORT_ALREADY_FILED",
+    )
   const [result] = await pool.execute<ResultSetHeader>(
     `INSERT INTO user_reports (reporter_id, reported_id, reason, details) VALUES (?, ?, ?, ?)`,
     [reporterId, reportedId, reason, details?.slice(0, 1000) || null],

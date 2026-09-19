@@ -218,8 +218,8 @@ export async function addFollowUp(
  * a 50-item batch cost ~450 round trips across 50 transactions. Here it is one
  * ownership check, one transaction, one INSERT, and one read back.
  *
- * Ids the caller doesn't own are skipped. A real DB failure rolls the whole
- * batch back rather than leaving it half-applied.
+ * Ids the caller doesn't own are skipped and reported back in `skipped`. A real
+ * DB failure rolls the whole batch back rather than leaving it half-applied.
  */
 export async function batchFollowUp(
   userId: number,
@@ -229,10 +229,10 @@ export async function batchFollowUp(
     status: FollowUpStatus
     note?: string | null
   }>,
-): Promise<SorenessEntry[]> {
+): Promise<{ entries: SorenessEntry[]; skipped: number[] }> {
   if (updates.length > 50)
     throw new ValidationError("Too many updates in a single batch")
-  if (!updates.length) return []
+  if (!updates.length) return { entries: [], skipped: [] }
 
   const [owned] = await pool.execute<(RowDataPacket & { id: number })[]>(
     `SELECT id FROM soreness
@@ -240,10 +240,17 @@ export async function batchFollowUp(
     [userId, ...updates.map((u) => u.sorenessId)],
   )
   const ownedIds = new Set(owned.map((r) => r.id))
-  return applyFollowUps(
-    userId,
-    updates.filter((u) => ownedIds.has(u.sorenessId)),
-  )
+  // Which ids were dropped, not just how many came back: a client that sent 5
+  // and got 4 otherwise has no way to tell which episode it failed to update.
+  return {
+    entries: await applyFollowUps(
+      userId,
+      updates.filter((u) => ownedIds.has(u.sorenessId)),
+    ),
+    skipped: updates
+      .map((u) => u.sorenessId)
+      .filter((id) => !ownedIds.has(id)),
+  }
 }
 
 async function applyFollowUps(

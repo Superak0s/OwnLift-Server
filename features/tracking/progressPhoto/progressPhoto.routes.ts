@@ -2,7 +2,11 @@ import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
 import { photoUpload, assertImageUpload } from "@/middleware/imageUpload.js"
 import { ValidationError } from "@/middleware/errorHandler.js"
-import { queryLimit, parseIntParam } from "@/middleware/validation.js"
+import {
+  queryLimit,
+  parseIntParam,
+  parseBackdatedTimestamp,
+} from "@/middleware/validation.js"
 import {
   uploadPhoto,
   getAllPhotos,
@@ -39,10 +43,10 @@ router.post("/", photoUpload.single("photo"), async (req: Request, res: Response
     note || null,
     angle || "custom",
     customSideName || null,
-    takenAt || null,
+    parseBackdatedTimestamp(takenAt || null, "takenAt"),
   )
 
-  res.status(201).json({ success: true, id })
+  res.status(201).json({ success: true, data: { id }, id })
 })
 
 router.get("/", async (req: Request, res: Response) => {

@@ -32,6 +32,22 @@ describe("sessionCleanup", () => {
   beforeAll(async () => {
     staleId = await openSession(45)
     freshId = await openSession(1)
+
+    // A set whose end_time is BEFORE its workout's start_time — a device with
+    // a slow clock, or an offline set replayed later. The sweep is a single
+    // UPDATE, so one such row used to make it violate ck_w_times and end
+    // nothing at all, for every user, on every 5-minute tick, forever.
+    const [ex] = await pool.execute(
+      `INSERT INTO exercises (name) VALUES (?)
+       ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
+      [uniqueName("clockskew")],
+    )
+    await pool.execute(
+      `INSERT INTO workout_sets
+         (workout_id, exercise_id, set_index, start_time, end_time, set_duration)
+       VALUES (?, ?, 0, NOW() - INTERVAL 90 MINUTE, NOW() - INTERVAL 90 MINUTE, 0)`,
+      [staleId, (ex as { insertId: number }).insertId],
+    )
   })
 
   afterAll(async () => {

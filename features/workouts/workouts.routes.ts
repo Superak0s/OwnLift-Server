@@ -5,6 +5,7 @@ import { ValidationError } from "@/middleware/errorHandler.js"
 import {
   parseIntParam,
   queryLimit,
+  queryString,
   validateRequired,
   validateSessionCreation,
   validateSetTiming,
@@ -16,6 +17,7 @@ import {
   createSession,
   recordSetTiming,
   updateSetTiming,
+  deleteSetByIndex,
   renameExerciseInHistory,
   endSession,
   getSessionDetails,
@@ -31,7 +33,8 @@ router.use(authenticateToken, applyTrainerContext)
 
 router.get("/", async (req: Request, res: Response) => {
   const userId = req.user!.id
-  const { split, dayNumber, includeTimings } = req.query
+  const { dayNumber, includeTimings } = req.query
+  const split = queryString(req, "split")
 
   // `limit` was previously unbounded, so ?limit=999999 with timings was a
   // ~36k-row, double-digit-MB response. The caps below are the smallest ones
@@ -43,7 +46,7 @@ router.get("/", async (req: Request, res: Response) => {
 
   const sessions = await getSessionHistory(
     userId,
-    (split as string) || null,
+    split || null,
     dayNumber ? parseIntParam(String(dayNumber), "dayNumber") : null,
     queryLimit(req, { def: 30, max: withTimings ? 1000 : 365 }),
     withTimings,
@@ -91,14 +94,20 @@ router.post("/start", validateSessionCreation, async (req: Request, res: Respons
  * Rename / re-group an exercise everywhere it appears in a split's session
  * history. Static path — declared before the dynamic /:sessionId routes.
  */
-router.post("/rename-exercise", denyTrainer, async (req: Request, res: Response) => {
+// validateSetTiming is mounted for its primaryMuscles/secondaryMuscles checks
+// — same field names, same shape. Without them a number reached newName.trim()
+// (a 500) and a non-array reached JSON.stringify, storing a JSON scalar that
+// parseMuscleGroups then silently read back as [].
+router.post("/rename-exercise", denyTrainer, validateSetTiming, async (req: Request, res: Response) => {
   const userId = req.user!.id
   const { oldName, newName, primaryMuscles, secondaryMuscles } = req.body
   const split = req.body.split
 
-  if (!split || typeof oldName !== "string" || !oldName.trim()) {
+  if (typeof split !== "string" || !split.trim() || typeof oldName !== "string" || !oldName.trim()) {
     throw new ValidationError("split and oldName are required")
   }
+  if (newName !== undefined && (typeof newName !== "string" || !newName.trim()))
+    throw new ValidationError("newName must be a non-empty string")
 
   const updatedCount = await renameExerciseInHistory(
     userId,
@@ -207,33 +216,6 @@ router.patch("/:sessionId/sets/:setId", validateSetTiming, async (req: Request, 
   res.json({ success: true, timing })
 })
 
-router.post("/:sessionId/end", async (req: Request, res: Response) => {
-  const userId = req.user!.id
-  const sessionId = parseIntParam(String(req.params.sessionId), "session ID")
-
-  const session = await endSession(sessionId, userId, req.body.endTime || null)
-
-  pushSessionStatusToWatchers(
-    userId,
-    req.user!.username,
-    null,
-    "friend_session_ended",
-  )
-
-  if (req.trainer)
-    pushTrainerEvent(req, sessionId, "trainer_session_ended")
-
-  res.json({ success: true, session })
-})
-
-router.get("/:sessionId", async (req: Request, res: Response) => {
-  const userId = req.user!.id
-  const sessionId = parseIntParam(String(req.params.sessionId), "session ID")
-
-  const session = await getSessionDetails(sessionId, userId)
-  res.json({ success: true, session })
-})
-
 // NOTE: Static paths (/split/:split, /) MUST come before the dynamic
 // /:sessionId routes so Express doesn't treat the literal as a session ID.
 
@@ -249,12 +231,73 @@ router.delete("/split/:split", denyTrainer, async (req: Request, res: Response) 
 
   const deletedCount = await deleteAllSessionsForSplit(userId, split)
   res.json({
-    success: deletedCount > 0,
+    success: true,
     deletedCount,
     message: deletedCount
       ? `Deleted ${deletedCount} session(s) for split: ${split}`
       : `No sessions found for split: ${split}`,
   })
+})
+
+// Addressed by exercise name + set index, not by set id: the app undoes a set
+// it only ever knew by its position in the day. Query params rather than a
+// body — DELETE bodies are not parsed here.
+router.delete("/:sessionId/sets", denyTrainer, async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const sessionId = parseIntParam(String(req.params.sessionId), "session ID")
+
+  const exerciseName = req.query.exerciseName
+  if (typeof exerciseName !== "string" || !exerciseName.trim())
+    throw new ValidationError("exerciseName is required")
+
+  // Not parseIntParam: set indices are 0-based and it rejects anything < 1.
+  const setIndex = Number(req.query.setIndex)
+  if (!Number.isInteger(setIndex) || setIndex < 0)
+    throw new ValidationError("setIndex must be an integer >= 0")
+
+  const deletedCount = await deleteSetByIndex(
+    sessionId,
+    userId,
+    exerciseName,
+    setIndex,
+  )
+
+  res.json({ success: true, deletedCount })
+})
+
+router.post("/:sessionId/end", async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const sessionId = parseIntParam(String(req.params.sessionId), "session ID")
+
+  // alreadyEnded: a retried or double-tapped end is a no-op, not a rewrite of
+  // end_time. Nothing changed, so nobody is notified a second time — but the
+  // client still gets the row (and the flag) so it can reconcile.
+  const { session, alreadyEnded } = await endSession(
+    sessionId,
+    userId,
+    req.body.endTime || null,
+  )
+
+  if (!alreadyEnded) {
+    pushSessionStatusToWatchers(
+      userId,
+      req.user!.username,
+      null,
+      "friend_session_ended",
+    )
+
+    if (req.trainer) pushTrainerEvent(req, sessionId, "trainer_session_ended")
+  }
+
+  res.json({ success: true, session, alreadyEnded })
+})
+
+router.get("/:sessionId", async (req: Request, res: Response) => {
+  const userId = req.user!.id
+  const sessionId = parseIntParam(String(req.params.sessionId), "session ID")
+
+  const session = await getSessionDetails(sessionId, userId)
+  res.json({ success: true, session })
 })
 
 

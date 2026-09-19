@@ -40,22 +40,22 @@ router.get("/search", async (req: Request, res: Response) => {
     queryLimit(req, { def: 10, max: 50 }),
   )
 
-  res.json({ success: true, users, count: users.length })
+  res.json({ success: true, users })
 })
 
 router.get("/", async (req: Request, res: Response) => {
   const friends = await getFriends(req.user!.id)
-  res.json({ success: true, friends, count: friends.length })
+  res.json({ success: true, friends })
 })
 
 router.get("/requests/pending", async (req: Request, res: Response) => {
   const requests = await getPendingRequests(req.user!.id)
-  res.json({ success: true, requests, count: requests.length })
+  res.json({ success: true, requests })
 })
 
 router.get("/requests/sent", async (req: Request, res: Response) => {
   const requests = await getSentRequests(req.user!.id)
-  res.json({ success: true, requests, count: requests.length })
+  res.json({ success: true, requests })
 })
 
 router.post("/request", async (req: Request, res: Response) => {
@@ -94,11 +94,6 @@ router.post("/request", async (req: Request, res: Response) => {
     success: true,
     message: "Friend request sent",
     friendshipId,
-    toUser: {
-      id: targetUser.id,
-      username: targetUser.username,
-      name: targetUser.name,
-    },
   })
 })
 
@@ -109,6 +104,8 @@ router.post("/request/:friendshipId/accept", async (req: Request, res: Response)
   res.json({ success: true, message: "Friend request accepted" })
 })
 
+// Also the cancel route: the recipient rejects, the sender cancels, and both
+// are the same pending row being deleted by someone in the pair.
 router.post("/request/:friendshipId/reject", async (req: Request, res: Response) => {
   const friendshipId = parseIntParam(String(req.params.friendshipId), "friendship ID")
 
@@ -116,6 +113,9 @@ router.post("/request/:friendshipId/reject", async (req: Request, res: Response)
   res.json({ success: true, message: "Friend request rejected" })
 })
 
+// NOTE the addressing: this one takes a USER id, while the accept/reject
+// routes above take a FRIENDSHIP id. Two schemes in one router, kept because
+// the app addresses an unfriend by the person, not by the row.
 router.delete("/:friendId", async (req: Request, res: Response) => {
   const friendId = parseIntParam(String(req.params.friendId), "friend ID")
 
@@ -125,7 +125,7 @@ router.delete("/:friendId", async (req: Request, res: Response) => {
 
 router.get("/blocked", async (req: Request, res: Response) => {
   const blocked = await getBlockedUsers(req.user!.id)
-  res.json({ success: true, blocked, count: blocked.length })
+  res.json({ success: true, blocked })
 })
 
 /**

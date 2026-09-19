@@ -23,8 +23,8 @@ class AppError extends Error {
 }
 
 export class ValidationError extends AppError {
-  constructor(message: string, details: unknown = null) {
-    super(message, 400, details)
+  constructor(message: string, details: unknown = null, code?: string) {
+    super(message, 400, details, code)
   }
 }
 
@@ -47,8 +47,8 @@ export class ForbiddenError extends AppError {
 }
 
 export class ConflictError extends AppError {
-  constructor(message: string) {
-    super(message, 409)
+  constructor(message: string, code?: string, details: unknown = null) {
+    super(message, 409, details, code)
   }
 }
 
@@ -69,6 +69,8 @@ export function throwCheckViolation(err: unknown, message: string): never {
 interface ErrorResponse {
   success: false
   error: string
+  /** Same id as the request log line, so a user can quote it and it's greppable. */
+  reqId?: string
   code?: string
   details?: unknown
   stack?: string
@@ -80,6 +82,13 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ): void {
+  // An error thrown after the response has already begun can't be answered —
+  // res.status() would throw ERR_HTTP_HEADERS_SENT from inside the error
+  // handler, which Express 5 has nowhere to route, so it surfaces as an
+  // unhandled rejection and shutdown()s the process. Hand it to Express's
+  // default handler, which destroys the socket.
+  if (res.headersSent) return _next(err)
+
   // multer raises its own error class with no statusCode; the one a client can
   // fix is a file over the size limit.
   if (err.name === "MulterError") {
@@ -88,24 +97,32 @@ export function errorHandler(
     return
   }
 
-  // A column overflow (1406, ER_DATA_TOO_LONG) is a client that sent more than
-  // one field holds — 400 wherever it happens, instead of a per-route length
-  // check for every string column. The generic message is deliberate: the
-  // driver's includes table and column names.
-  if ((err as { errno?: number }).errno === 1406) {
-    res.status(400).json({ success: false, error: "Value too long for its field" })
+  // A value that doesn't fit its column is a client that sent something out of
+  // range — 400 wherever it happens, instead of a per-route bound check for
+  // every string and DECIMAL column. 1406 = ER_DATA_TOO_LONG (string too long),
+  // 1264 = ER_WARN_DATA_OUT_OF_RANGE and 1265 = WARN_DATA_TRUNCATED, which is
+  // what a DECIMAL(10,3) answers to a weight of 1e9. The generic message is
+  // deliberate: the driver's includes table and column names.
+  if ([1406, 1264, 1265].includes((err as { errno?: number }).errno ?? 0)) {
+    res.status(400).json({
+      success: false,
+      error: "Value out of range for its field",
+      code: "VALUE_OUT_OF_RANGE",
+    })
     return
   }
 
-  logger.error("Error:", {
+  const statusCode = (err as AppError).statusCode ?? 500
+
+  // 4xx is the client being told something normal ("you have no program yet") —
+  // noise at error level. Only 5xx means this server is broken.
+  logger[statusCode < 500 ? "warn" : "error"]("Error:", {
     message: err.message,
     stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
     path: req.path,
     method: req.method,
     reqId: req.reqId,
   })
-
-  const statusCode = (err as AppError).statusCode ?? 500
   const isDev = process.env.NODE_ENV === "development"
 
   // Never leak internal error details (raw DB/driver messages, stack traces)
@@ -119,7 +136,11 @@ export function errorHandler(
         ? err.message || "Internal server error"
         : "Internal server error"
 
-  const response: ErrorResponse = { success: false, error: safeMessage }
+  const response: ErrorResponse = {
+    success: false,
+    error: safeMessage,
+    reqId: req.reqId,
+  }
 
   // Only our own errors carry a code clients can act on; driver codes
   // (ER_DUP_ENTRY, ...) are internal details and stay out of 5xx responses.

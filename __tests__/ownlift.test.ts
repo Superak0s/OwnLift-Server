@@ -47,6 +47,19 @@ describe("ownlift CLI", () => {
     let [rows] = await pool.query("SELECT is_admin FROM users WHERE username = ?", [username])
     expect((rows as any[])[0].is_admin).toBe(1)
 
+    // Removing the last admin is refused — this CLI is the only way back in.
+    // Other test files share this database and may have made their own admins
+    // (the first user of a fresh database is one), so make this user the only
+    // admin explicitly rather than assuming it.
+    await pool.query("UPDATE users SET is_admin = 0 WHERE username <> ?", [username])
+    const lastOne = await runCli(["remove", username])
+    expect(lastOne.code).toBe(2)
+    expect(lastOne.out).toContain("only admin")
+
+    const second = uniqueName("adm2")
+    await createUser(second, `${second}@test.local`, "Passw0rd-123")
+    expect((await runCli(["add", second])).code).toBe(0)
+
     const remove = await runCli(["remove", username])
     expect(remove.code).toBe(0)
     expect(remove.out).toContain(`admin=false`)
@@ -73,15 +86,20 @@ describe("ownlift CLI", () => {
     expect(await bcrypt.compare("NewPass99", hash)).toBe(true)
   })
 
-  it("lists admins and reports", async () => {
+  it("lists every user with an admin marker, and reports", async () => {
     const admin = uniqueName("lsadm")
+    const plain = uniqueName("lsuser")
     await createUser(admin, `${admin}@test.local`, "Passw0rd-123")
+    await createUser(plain, `${plain}@test.local`, "Passw0rd-123")
     await runCli(["add", admin])
 
     const list = await runCli(["list"])
     expect(list.code).toBe(0)
-    expect(list.out).toContain("Admin users:")
+    expect(list.out).toContain(`[admin] id=`)
     expect(list.out).toContain(admin)
+    // The whole point of the change: a non-admin's spelling is visible too,
+    // since `add`/`remove` need it exactly.
+    expect(list.out).toContain(plain)
 
     const a = uniqueName("rep-a")
     const b = uniqueName("rep-b")

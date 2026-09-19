@@ -1,6 +1,10 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
-import { parseIntParam, queryLimit } from "@/middleware/validation.js"
+import {
+  parseIntParam,
+  queryLimit,
+  parseBackdatedTimestamp,
+} from "@/middleware/validation.js"
 import {
   ValidationError,
   NotFoundError,
@@ -73,7 +77,7 @@ async function requireSupplement(userId: number, supplementId: number) {
 
 router.get("/", async (req: Request, res: Response) => {
   const summaries = await listSupplementSummaries(req.user!.id)
-  res.json({ success: true, supplements: summaries })
+  res.json({ success: true, data: summaries, supplements: summaries })
 })
 
 router.post("/", async (req: Request, res: Response) => {
@@ -100,7 +104,7 @@ router.post("/", async (req: Request, res: Response) => {
     icon ?? null,
   )
 
-  res.status(201).json({ success: true, supplement })
+  res.status(201).json({ success: true, data: supplement, supplement })
 })
 
 router.patch("/:id", async (req: Request, res: Response) => {
@@ -129,7 +133,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
     icon,
   })
 
-  res.json({ success: true, supplement: updated })
+  res.json({ success: true, data: updated, supplement: updated })
 })
 
 router.delete("/:id", async (req: Request, res: Response) => {
@@ -155,12 +159,16 @@ router.post("/:id/log", async (req: Request, res: Response) => {
     req.user!.id,
     supplementId,
     amount ?? supplement.defaultAmount,
-    takenAt ?? null,
+    // A future takenAt silently zeroes the streak (see streakFromDays), so it
+    // is rejected here rather than quietly destroying the user's history.
+    parseBackdatedTimestamp(takenAt, "takenAt"),
     note ?? null,
   )
   const streak = await getStreak(req.user!.id, supplementId)
 
-  res.status(201).json({ success: true, id: entryId, streak })
+  res
+    .status(201)
+    .json({ success: true, data: { id: entryId, streak }, id: entryId, streak })
 })
 
 router.get("/:id/log", async (req: Request, res: Response) => {
@@ -174,13 +182,8 @@ router.get("/:id/log", async (req: Request, res: Response) => {
     hasTakenTodayServer(req.user!.id, supplementId),
   ])
 
-  res.json({
-    success: true,
-    entries,
-    streak,
-    takenToday: !!todayEntry,
-    todayEntry,
-  })
+  const log = { entries, streak, takenToday: !!todayEntry, todayEntry }
+  res.json({ success: true, data: log, ...log })
 })
 
 router.delete("/:id/log/:entryId", async (req: Request, res: Response) => {

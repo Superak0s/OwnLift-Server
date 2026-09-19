@@ -7,7 +7,7 @@
 
 import { pool } from "@/config/database.js"
 import type { RowDataPacket } from "mysql2"
-import { throwCheckViolation } from "@/middleware/errorHandler.js"
+import { NotFoundError, throwCheckViolation } from "@/middleware/errorHandler.js"
 
 /** Wire (camelCase) name → column name. The only map of the two. */
 const COLUMNS = {
@@ -24,6 +24,13 @@ const COLUMNS = {
 export type SettingKey = keyof typeof COLUMNS
 
 export const SETTING_KEYS = Object.keys(COLUMNS) as SettingKey[]
+
+/** Keys whose column is an integer type — MySQL silently rounds 5.7 to 6. */
+export const INTEGER_SETTING_KEYS: ReadonlySet<SettingKey> = new Set([
+  "hydrationGoalMl",
+  "cyclePeriodDays",
+  "cycleLengthDays",
+])
 
 export type UserSettings = Record<SettingKey, number> & {
   updatedAt: Date | string | null
@@ -54,6 +61,10 @@ export async function getUserSettings(userId: number): Promise<UserSettings> {
     ])
     row = await read()
   }
+  // INSERT IGNORE swallows the FK violation if the user row vanished between
+  // authenticateToken and here, and the cast would then serialize `undefined`
+  // as a 200 with no data.
+  if (!row) throw new NotFoundError("User")
   return row as unknown as UserSettings
 }
 

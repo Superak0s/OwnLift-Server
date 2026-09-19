@@ -53,11 +53,11 @@ describe("friends routes", () => {
     const friendshipId = req.body.friendshipId
 
     const pending = await request(app).get("/api/friends/requests/pending").set(auth(b.token))
-    expect(pending.body.count).toBe(1)
+    expect(pending.body.requests).toHaveLength(1)
     expect(pending.body.requests[0].username).toBe(a.username)
 
     const sent = await request(app).get("/api/friends/requests/sent").set(auth(a.token))
-    expect(sent.body.count).toBe(1)
+    expect(sent.body.requests).toHaveLength(1)
 
     const accept = await request(app)
       .post(`/api/friends/request/${friendshipId}/accept`)

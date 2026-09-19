@@ -127,7 +127,17 @@ export async function getMenstrualHistory(
   return rows
 }
 
-export async function getCycleStats(userId: number): Promise<CycleStats> {
+/**
+ * `overrides` lets the caller preview the stats under a different period or
+ * cycle length than the one saved in settings — the app's menstrual tab edits
+ * both inline before committing them. They stand in for the *saved* values
+ * only: an observed average still wins over an overridden cycle length, the
+ * same way it wins over the stored one.
+ */
+export async function getCycleStats(
+  userId: number,
+  overrides: { periodDays?: number; cycleLengthDays?: number } = {},
+): Promise<CycleStats> {
   const [[lastRows], [avgRows], settings] = await Promise.all([
     pool.execute<MenstrualEntry[]>(
       `SELECT ${CYCLE_COLS} FROM menstrual_cycle
@@ -147,8 +157,11 @@ export async function getCycleStats(userId: number): Promise<CycleStats> {
   ])
 
   const last = lastRows[0] ?? null
-  const cycleLength = Number(avgRows[0]?.avgDays) || settings.cycleLengthDays
-  const periodDays = settings.cyclePeriodDays
+  const cycleLength =
+    Number(avgRows[0]?.avgDays) ||
+    overrides.cycleLengthDays ||
+    settings.cycleLengthDays
+  const periodDays = overrides.periodDays ?? settings.cyclePeriodDays
 
   if (!last) {
     return {

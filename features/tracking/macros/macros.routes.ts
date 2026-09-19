@@ -1,6 +1,10 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
-import { queryLimit, parseIntParam } from "@/middleware/validation.js"
+import {
+  queryLimit,
+  parseIntParam,
+  parseBackdatedTimestamp,
+} from "@/middleware/validation.js"
 import {
   ValidationError,
   NotFoundError,
@@ -38,6 +42,9 @@ router.post("/log", async (req: Request, res: Response) => {
   const userId = req.user!.id
 
   if (!takenAt) throw new ValidationError("takenAt is required")
+  // Same guard as every other tracking timestamp: a phone whose clock is years
+  // ahead would otherwise sort to the top of every history query forever.
+  const parsedTakenAt = parseBackdatedTimestamp(takenAt, "takenAt")!
 
   const hasAtLeastOne =
     protein != null ||
@@ -65,20 +72,19 @@ router.post("/log", async (req: Request, res: Response) => {
     parsedFat,
     parsedCalories,
     parsedMargin,
-    takenAt,
+    parsedTakenAt,
     note,
   )
 
-  res.json({
-    success: true,
-    entry,
-  })
+  // 201, like the nine sibling log endpoints. `entry` is the legacy key; see
+  // the note on the envelope in bodyStats.routes.ts.
+  res.status(201).json({ success: true, data: entry, entry })
 })
 
 router.get("/log", async (req: Request, res: Response) => {
   const days = queryLimit(req, { def: 30, max: 365, key: "days" })
   const entries = await getMacrosHistory(req.user!.id, days)
-  res.json({ success: true, entries })
+  res.json({ success: true, data: entries, entries })
 })
 
 // Macro goals live in /api/settings with every other preference — there is no
@@ -88,7 +94,7 @@ router.delete("/log/:id", async (req: Request, res: Response) => {
   const entryId = parseIntParam(String(req.params.id), "macro entry ID")
   const deleted = await deleteMacrosEntry(req.user!.id, entryId)
   if (!deleted) throw new NotFoundError("Macro entry")
-  res.json({ success: true, message: "Entry deleted successfully" })
+  res.json({ success: true })
 })
 
 export default router

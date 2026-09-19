@@ -23,6 +23,10 @@ import {
 } from "./bodyStats.model.js"
 import { getUserBodyData } from "@/features/auth/user.model.js"
 
+// Every response here is `{ success, data }`. The older per-feature keys
+// (`entry`, `entries`, `id`, `supplement`, `supplements`) are still emitted
+// beside `data` so an app build that ships after the server image still works;
+// drop them once no released app reads them.
 const router: Router = Router()
 
 router.use(authenticateToken)
@@ -35,18 +39,18 @@ router.post("/weight", validateWeightEntry, async (req: Request, res: Response) 
     parseBackdatedTimestamp(measuredAt, "measuredAt"),
     note || null,
   )
-  res.status(201).json({ success: true, id })
+  res.status(201).json({ success: true, data: { id }, id })
 })
 
 router.get("/weight/current", async (req: Request, res: Response) => {
   const entry = await getCurrentWeight(req.user!.id)
-  res.json({ success: true, entry })
+  res.json({ success: true, data: entry, entry })
 })
 
 router.get("/weight", async (req: Request, res: Response) => {
   const limit = queryLimit(req, { def: 90, max: 365 })
   const entries = await getWeightHistory(req.user!.id, limit)
-  res.json({ success: true, entries })
+  res.json({ success: true, data: entries, entries })
 })
 
 router.delete("/weight/:id", async (req: Request, res: Response) => {
@@ -140,20 +144,20 @@ router.post("/bodyfat/log", async (req: Request, res: Response) => {
     parseBackdatedTimestamp(measuredAt, "measuredAt") ?? new Date().toISOString(),
   )
 
-  res.json({ success: true, entry })
+  res.json({ success: true, data: entry, entry })
 })
 
 router.get("/bodyfat/log", async (req: Request, res: Response) => {
   const limit = queryLimit(req, { def: 90, max: 365 })
   const entries = await getBodyFatHistory(req.user!.id, limit)
-  res.json({ success: true, entries })
+  res.json({ success: true, data: entries, entries })
 })
 
 router.delete("/bodyfat/log/:id", async (req: Request, res: Response) => {
   const entryId = parseIntParam(String(req.params.id), "body fat entry ID")
   const deleted = await deleteBodyFatEntry(req.user!.id, entryId)
   if (!deleted) throw new NotFoundError("Body fat entry")
-  res.json({ success: true, message: "Entry deleted successfully" })
+  res.json({ success: true })
 })
 
 export default router

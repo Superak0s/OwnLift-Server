@@ -13,7 +13,12 @@
 import { pool } from "@/config/database.js"
 import type { RowDataPacket, ResultSetHeader } from "mysql2"
 import type { PoolConnection } from "mysql2/promise"
-import { NotFoundError, ValidationError } from "@/middleware/errorHandler.js"
+import {
+  NotFoundError,
+  ValidationError,
+  throwCheckViolation,
+} from "@/middleware/errorHandler.js"
+import { backfillMuscles } from "@/features/workouts/workouts.model.js"
 import type {
   Exercise,
   MachineFields,
@@ -30,6 +35,28 @@ export const MACHINE_FIELDS = [
   "bestAcrossMachines",
   "machineMeta",
 ] as const satisfies readonly (keyof MachineFields)[]
+
+/**
+ * Every key an uploaded exercise may carry. Anything else is rejected rather
+ * than dropped: the old behaviour discarded unrecognised keys silently, so a
+ * client sending a field the server had never heard of got a 200 and no data.
+ */
+const EXERCISE_KEYS: readonly string[] = [
+  "name",
+  "primaryMuscles",
+  "secondaryMuscles",
+  "sets",
+  "reps",
+  "exerciseId",
+  // Legacy: superseded by exerciseId = CUSTOM_EXERCISE_ID, but programs saved
+  // before that still carry it on device and the app's migration doesn't strip
+  // it, so rejecting it would 400 a re-upload of an older program.
+  "custom",
+  ...MACHINE_FIELDS,
+]
+
+/** Case-insensitive catalog key — `exercises.name` is utf8mb4_unicode_ci. */
+const catalogKey = (name: string): string => name.trim().toLowerCase()
 
 const asStrings = (raw: unknown): string[] =>
   Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : []
@@ -120,11 +147,24 @@ function toProgramData(
     else byDay.set(slot.programDayId, [slot])
   }
 
+  // Slots come back ordered by split_name so the per-day grouping is stable,
+  // which alphabetised every day's split keys. The program's own split_order is
+  // the upload's order, so re-key each day through it instead of storing the
+  // order a second time per day.
+  const splitOrder = asStrings(program.splitOrder)
+  const bySplitOrder = (a: string, b: string): number => {
+    const ia = splitOrder.indexOf(a)
+    const ib = splitOrder.indexOf(b)
+    if (ia !== ib)
+      return (ia < 0 ? splitOrder.length : ia) - (ib < 0 ? splitOrder.length : ib)
+    return a.localeCompare(b)
+  }
+
   return {
-    split: asStrings(program.splitOrder),
+    split: splitOrder,
     days: days.map((day): ProgramDay => {
       const daySlots = byDay.get(day.id) ?? []
-      const split: ProgramDay["split"] = {}
+      const unordered: ProgramDay["split"] = {}
       // Flat list, in first-seen order, with the per-split set counts the day
       // view reads. Derived here rather than stored twice.
       const flat = new Map<string, ProgramDay["exercises"][number]>()
@@ -139,7 +179,10 @@ function toProgramData(
           exerciseId: slot.exerciseId,
           ...(slot.machine ?? {}),
         }
-        const sw = (split[slot.splitName] ??= { exercises: [], totalSets: 0 })
+        const sw = (unordered[slot.splitName] ??= {
+          exercises: [],
+          totalSets: 0,
+        })
         sw.exercises.push(exercise)
         sw.totalSets += slot.sets
 
@@ -155,6 +198,10 @@ function toProgramData(
             setsBySplit: { [slot.splitName]: slot.sets },
           })
       }
+
+      const split: ProgramDay["split"] = {}
+      for (const name of Object.keys(unordered).sort(bySplitOrder))
+        split[name] = unordered[name]
 
       return {
         dayNumber: day.dayNumber,
@@ -172,12 +219,24 @@ function toProgramData(
 
 /**
  * Catalog ids for every name in one round trip, creating the rows that don't
- * exist yet. Muscle groups are only written when the upload supplies them, so a
- * re-upload that omits them doesn't blank the catalog for everyone.
+ * exist yet.
+ *
+ * The returned map is keyed case-insensitively, because `exercises.name` is
+ * utf8mb4_unicode_ci: an upload saying "Bench Press" against a stored
+ * "bench press" gets the stored spelling back from the SELECT, and keying on
+ * the payload's spelling left the lookup undefined — which mysql2 rejects, so
+ * the whole upload 500'd on a casing difference.
+ *
+ * Muscle groups fill blanks only, never overwrite: this catalog is shared by
+ * everyone on the instance, so overwriting relabels the exercise in every
+ * other user's history too (same rule as backfillMuscles).
  */
 async function catalogIds(
   connection: PoolConnection,
-  exercises: Map<string, { primaryMuscles: string[]; secondaryMuscles: string[] }>,
+  exercises: Map<
+    string,
+    { name: string; primaryMuscles: string[]; secondaryMuscles: string[] }
+  >,
 ): Promise<Map<string, number>> {
   const names = [...exercises.keys()]
   if (!names.length) return new Map()
@@ -186,14 +245,16 @@ async function catalogIds(
     `INSERT INTO exercises (name, primary_muscles, secondary_muscles) VALUES
      ${names.map(() => "(?, ?, ?)").join(", ")}
      ON DUPLICATE KEY UPDATE
-       primary_muscles = IF(JSON_LENGTH(VALUES(primary_muscles)) > 0,
+       primary_muscles = IF(JSON_LENGTH(primary_muscles) = 0
+                            AND JSON_LENGTH(VALUES(primary_muscles)) > 0,
                             VALUES(primary_muscles), primary_muscles),
-       secondary_muscles = IF(JSON_LENGTH(VALUES(secondary_muscles)) > 0,
+       secondary_muscles = IF(JSON_LENGTH(secondary_muscles) = 0
+                              AND JSON_LENGTH(VALUES(secondary_muscles)) > 0,
                               VALUES(secondary_muscles), secondary_muscles)`,
     names.flatMap((name) => {
       const e = exercises.get(name)!
       return [
-        name,
+        e.name,
         JSON.stringify(e.primaryMuscles),
         JSON.stringify(e.secondaryMuscles),
       ]
@@ -204,9 +265,9 @@ async function catalogIds(
     (RowDataPacket & { id: number; name: string })[]
   >(
     `SELECT id, name FROM exercises WHERE name IN (${names.map(() => "?").join(", ")})`,
-    names,
+    names.map((n) => exercises.get(n)!.name),
   )
-  return new Map(rows.map((r) => [r.name, r.id]))
+  return new Map(rows.map((r) => [catalogKey(r.name), r.id]))
 }
 
 /**
@@ -222,19 +283,40 @@ export async function upsertProgram(
 ): Promise<void> {
   const days = programData.days ?? []
 
+  // Two entries with the same dayNumber upsert onto the same row, and the
+  // second one's unconditional DELETE wipes the exercises the first just
+  // wrote — a 200 that silently emptied a day.
+  const seenDays = new Set<number>()
+  for (const day of days) {
+    if (seenDays.has(day.dayNumber))
+      throw new ValidationError(`Duplicate dayNumber ${day.dayNumber}`)
+    seenDays.add(day.dayNumber)
+  }
+
   // Every exercise named anywhere in the upload, with the best muscle groups
-  // the payload offers for it.
+  // the payload offers for it. Keyed case-insensitively to match the catalog's
+  // collation, so "Bench Press" and "bench press" in one upload are one entry.
   const catalog = new Map<
     string,
-    { primaryMuscles: string[]; secondaryMuscles: string[] }
+    { name: string; primaryMuscles: string[]; secondaryMuscles: string[] }
   >()
   for (const day of days)
     for (const sw of Object.values(day.split ?? {}))
       for (const ex of sw.exercises ?? []) {
         const name = ex.name?.trim()
         if (!name) throw new ValidationError("Every exercise needs a name")
-        const existing = catalog.get(name)
-        catalog.set(name, {
+        const unknown = Object.keys(ex).filter(
+          (k) => !EXERCISE_KEYS.includes(k),
+        )
+        if (unknown.length)
+          throw new ValidationError(
+            `Unknown key(s) on exercise "${name}": ${unknown.join(", ")}`,
+          )
+        if (ex.sets != null && !Number.isFinite(Number(ex.sets)))
+          throw new ValidationError(`sets must be a number on "${name}"`)
+        const existing = catalog.get(catalogKey(name))
+        catalog.set(catalogKey(name), {
+          name,
           primaryMuscles: ex.primaryMuscles?.length
             ? ex.primaryMuscles
             : (existing?.primaryMuscles ?? []),
@@ -289,7 +371,7 @@ export async function upsertProgram(
           dayId,
           splitName,
           position,
-          ids.get(ex.name.trim())!,
+          ids.get(catalogKey(ex.name))!,
           ex.exerciseId?.trim() || null,
           Number(ex.sets) || 0,
           ex.reps?.trim() || null,
@@ -313,6 +395,18 @@ export async function upsertProgram(
         ? `DELETE FROM program_days WHERE program_id = ?
              AND day_number NOT IN (${days.map(() => "?").join(", ")})`
         : `DELETE FROM program_days WHERE program_id = ?`,
+      [programId, ...days.map((d) => d.dayNumber)],
+    )
+
+    // ...and neither must the day pointer. Re-uploading a 4-day program over a
+    // 7-day one left current_day = 7, so the client opened a day that no longer
+    // exists and logged a permanently unlabelled workout.
+    await connection.execute(
+      days.length
+        ? `UPDATE programs SET current_day = NULL WHERE id = ?
+             AND current_day IS NOT NULL
+             AND current_day NOT IN (${days.map(() => "?").join(", ")})`
+        : `UPDATE programs SET current_day = NULL WHERE id = ?`,
       [programId, ...days.map((d) => d.dayNumber)],
     )
 
@@ -341,6 +435,53 @@ export async function deleteProgramByUserId(userId: number): Promise<boolean> {
     [userId],
   )
   return result.affectedRows > 0
+}
+
+/**
+ * The user's current day pointer. `null` both when there is no program and
+ * when one exists but no day was ever set — the client treats the two the
+ * same (it falls back to its local pointer), so they need no distinction here.
+ */
+export async function getProgramCurrentDay(
+  userId: number,
+): Promise<number | null> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT current_day FROM programs WHERE user_id = ?`,
+    [userId],
+  )
+  return rows[0]?.current_day ?? null
+}
+
+/**
+ * Throws rather than inserting when the user has no program: a day pointer
+ * into a program that doesn't exist points at nothing, and an upsert here
+ * would create a program row with no days behind the caller's back.
+ */
+export async function setProgramCurrentDay(
+  userId: number,
+  currentDay: number,
+): Promise<void> {
+  // Existence is checked separately rather than read off affectedRows: MySQL
+  // counts rows *changed*, not matched, so re-setting the day the user is
+  // already on would otherwise look like "no such program" and 404.
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT id FROM programs WHERE user_id = ?`,
+    [userId],
+  )
+  if (!rows.length) throw new NotFoundError("Program")
+
+  // The day has to exist too — otherwise the client happily starts a workout
+  // for a day the program doesn't have, and findProgramDayId returns null.
+  const [day] = await pool.execute<RowDataPacket[]>(
+    `SELECT id FROM program_days WHERE program_id = ? AND day_number = ?`,
+    [rows[0].id, currentDay],
+  )
+  if (!day.length) throw new NotFoundError(`Day ${currentDay}`)
+
+  await pool.execute(`UPDATE programs SET current_day = ? WHERE user_id = ?`, [
+    currentDay,
+    userId,
+  ])
 }
 
 // ─── Targeted edits ───────────────────────────────────────────────────────────
@@ -395,21 +536,16 @@ async function findOrCreateExercise(
   secondaryMuscles?: string[],
 ): Promise<number> {
   const [hit] = await pool.execute<RowDataPacket[]>(
-    `SELECT id FROM exercises WHERE name = ?`,
+    `SELECT id, primary_muscles AS primaryMuscles,
+            secondary_muscles AS secondaryMuscles
+     FROM exercises WHERE name = ?`,
     [name],
   )
   if (hit[0]) {
-    if (primaryMuscles !== undefined || secondaryMuscles !== undefined)
-      await pool.execute(
-        `UPDATE exercises SET primary_muscles = COALESCE(?, primary_muscles),
-                              secondary_muscles = COALESCE(?, secondary_muscles)
-         WHERE id = ?`,
-        [
-          primaryMuscles ? JSON.stringify(primaryMuscles) : null,
-          secondaryMuscles ? JSON.stringify(secondaryMuscles) : null,
-          hit[0].id,
-        ],
-      )
+    // backfillMuscles, not an overwrite: `exercises` has no user_id, so
+    // renaming an exercise here used to relabel it in every other user's
+    // history. Blanks get filled; anything already set is left alone.
+    await backfillMuscles(hit[0], primaryMuscles ?? [], secondaryMuscles ?? [])
     return hit[0].id
   }
 
@@ -485,20 +621,29 @@ export async function addExercise(
     exercise.secondaryMuscles,
   )
 
-  // The position is computed inside the INSERT so two adds to the same day
-  // can't both read the same MAX and collide on the unique (day, position)
-  // pair.
+  // The position is computed inside the INSERT, but at READ COMMITTED two
+  // concurrent adds still read the same MAX and the loser hits uq_pe_slot — a
+  // phone and a tablet adding to the same split at once. One retry is enough:
+  // by then the winner's row is committed and MAX has moved.
   const reps = exercise.reps?.trim() || null
   const catalogId = exercise.exerciseId?.trim() || null
-  const [inserted] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO program_exercises
-       (program_day_id, split_name, position, exercise_id, catalog_id,
-        target_sets, target_reps)
-     SELECT ?, ?, COALESCE(MAX(position) + 1, 0), ?, ?, ?, ?
-     FROM program_exercises
-     WHERE program_day_id = ? AND split_name = ?`,
-    [dayId, split, catalogRowId, catalogId, sets, reps, dayId, split],
-  )
+  const insertSlot = () =>
+    pool.execute<ResultSetHeader>(
+      `INSERT INTO program_exercises
+         (program_day_id, split_name, position, exercise_id, catalog_id,
+          target_sets, target_reps)
+       SELECT ?, ?, COALESCE(MAX(position) + 1, 0), ?, ?, ?, ?
+       FROM program_exercises
+       WHERE program_day_id = ? AND split_name = ?`,
+      [dayId, split, catalogRowId, catalogId, sets, reps, dayId, split],
+    )
+  let inserted: ResultSetHeader
+  try {
+    ;[inserted] = await insertSlot()
+  } catch (err) {
+    if ((err as { code?: string }).code !== "ER_DUP_ENTRY") throw err
+    ;[inserted] = await insertSlot()
+  }
   const [[insertedRow]] = await pool.execute<
     (RowDataPacket & { position: number })[]
   >(`SELECT position FROM program_exercises WHERE id = ?`, [inserted.insertId])
@@ -563,8 +708,10 @@ export async function patchExerciseSets(
   exerciseIndex: number,
   additionalSets: number,
 ): Promise<{ exerciseIndex: number; newSetCount: number }> {
-  const added = parseInt(String(additionalSets))
-  if (isNaN(added)) throw new ValidationError("additionalSets must be a number")
+  // Not parseInt: it read "5abc" as 5 and "1e9" as 1.
+  const added = Number(additionalSets)
+  if (!Number.isInteger(added))
+    throw new ValidationError("additionalSets must be an integer")
 
   const slot = await requireSlot(userId, dayNumber, split, exerciseIndex)
   const newSetCount = slot.sets + added
@@ -572,9 +719,15 @@ export async function patchExerciseSets(
   if (newSetCount < 0)
     throw new ValidationError("An exercise cannot have fewer than 0 sets")
 
-  await pool.execute(
-    `UPDATE program_exercises SET target_sets = ? WHERE id = ?`,
-    [newSetCount, slot.id],
-  )
+  try {
+    await pool.execute(
+      `UPDATE program_exercises SET target_sets = ? WHERE id = ?`,
+      [newSetCount, slot.id],
+    )
+  } catch (err) {
+    // target_sets is an INT — the negative side was already a 400, and an
+    // overflow past its ceiling is the same class of bad request.
+    throw throwCheckViolation(err, "That many sets is out of range")
+  }
   return { exerciseIndex, newSetCount }
 }

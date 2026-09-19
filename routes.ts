@@ -22,10 +22,22 @@ import progressPhotoRoutes from "./features/tracking/progressPhoto/progressPhoto
 
 // Features this deployment refuses to store, to keep its disk footprint down.
 // The client reads the same list from /healthz and logs them on-device instead.
+const KNOWN_LOCAL_ONLY = ["tracking", "supplements"] as const
+
+// Validated and lowercased at module load: `serves()` is an exact match, so
+// "Tracking" or a typo used to mount the feature anyway *and* still advertise
+// it as local-only on /healthz — the operator's intent silently inverted.
 export const localOnlyFeatures = (process.env.LOCAL_ONLY_FEATURES ?? "")
   .split(",")
-  .map((f) => f.trim())
+  .map((f) => f.trim().toLowerCase())
   .filter(Boolean)
+  .map((f) => {
+    if (!(KNOWN_LOCAL_ONLY as readonly string[]).includes(f))
+      throw new Error(
+        `LOCAL_ONLY_FEATURES: unknown feature "${f}" — accepted values are: ${KNOWN_LOCAL_ONLY.join(", ")}`,
+      )
+    return f
+  })
 
 const serves = (feature: string): boolean => !localOnlyFeatures.includes(feature)
 

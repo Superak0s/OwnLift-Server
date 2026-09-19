@@ -1,6 +1,8 @@
 # Migrations
 
-This directory is intentionally empty.
+Files are applied in filename order via `localeCompare`, so the `NNN_` prefix
+must stay **zero-padded to three digits** — `010_x.sql` sorts before `2_x.sql`
+if anyone drops the padding.
 
 `config/schema.sql` is the single source of truth: it describes the *current*
 shape of every table and re-runs idempotently on every boot, so a fresh
@@ -26,3 +28,12 @@ minimum supported prior version here.
 `custom_side_name` for deployments created before those columns were added to
 `schema.sql`. Minimum supported prior version: any post-rename (`workouts`)
 schema.
+
+`002_programs_current_day.sql` adds `programs.current_day`, backing
+`GET`/`PUT /api/program/current-day`. Same minimum supported prior version.
+
+`003_measurements_unique.sql` replaces `measurements.idx_m_user_metric_at` with
+a UNIQUE key on the same columns, which is what lets `logMetrics` upsert and
+stops two offline devices doubling every point on reconnect. It deletes existing
+duplicates (keeping the lowest id) first, since the ALTER cannot run while they
+exist. Same minimum supported prior version.

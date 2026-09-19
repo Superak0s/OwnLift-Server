@@ -130,6 +130,9 @@ CREATE TABLE IF NOT EXISTS programs (
   -- Ordered list of split names ("A","B",…) as the parser emitted them. An
   -- ordered array of labels with no attributes of its own — JSON is right here.
   split_order       JSON         NOT NULL DEFAULT (JSON_ARRAY()),
+  -- Which day the user is currently on. NULL until they set one; the app
+  -- falls back to its own local pointer in that case.
+  current_day       INT UNSIGNED          DEFAULT NULL,
   uploaded_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_programs_user (user_id),
@@ -270,7 +273,10 @@ CREATE TABLE IF NOT EXISTS measurements (
   note        TEXT                   DEFAULT NULL,
   created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_m_user_metric_at (user_id, metric, measured_at),
+  -- Unique, not just indexed: a device replaying a week of offline logs on
+  -- reconnect must overwrite its own earlier rows, not double every point.
+  -- logMetrics relies on this for ON DUPLICATE KEY UPDATE.
+  UNIQUE KEY uq_m_user_metric_at (user_id, metric, measured_at),
   KEY idx_m_user_at (user_id, measured_at),
   CONSTRAINT fk_m_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
   CONSTRAINT ck_m_value CHECK (value > 0)

@@ -34,8 +34,8 @@ describe("macros routes", () => {
         // the history query is a rolling window, so this has to be recent
         takenAt: new Date().toISOString(), note: "good",
       })
-    expect(ok.status).toBe(200)
-    entryId = ok.body.entry.id
+    expect(ok.status).toBe(201)
+    entryId = ok.body.data.id
   })
 
   // Macro goals are /api/settings keys now, not PUT /api/tracking/macros/goals.

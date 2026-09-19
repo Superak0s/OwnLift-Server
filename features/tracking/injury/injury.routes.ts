@@ -1,7 +1,11 @@
 import { Router, Request, Response } from "express"
 import { authenticateToken } from "@/middleware/auth.js"
 import { ValidationError, NotFoundError } from "@/middleware/errorHandler.js"
-import { queryLimit, parseIntParam } from "@/middleware/validation.js"
+import {
+  queryLimit,
+  parseIntParam,
+  parseBackdatedTimestamp,
+} from "@/middleware/validation.js"
 import {
   logInjury,
   getAllInjuries,
@@ -30,7 +34,8 @@ router.post("/", async (req: Request, res: Response) => {
     muscleGroup,
     injuryType,
     painLevel,
-    startDate || new Date().toISOString(),
+    parseBackdatedTimestamp(startDate || null, "startDate") ??
+      new Date().toISOString(),
     note || null,
   )
   res.status(201).json({ success: true, data: result })

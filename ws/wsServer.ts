@@ -33,6 +33,9 @@ interface WsMessage {
 interface ExtendedWebSocket extends WebSocket {
   _pongReceived?: boolean
   _userId?: number
+  /** JWT `exp` (seconds) and token_version, re-checked by the heartbeat sweep. */
+  _exp?: number
+  _tokenVersion?: number
 }
 
 const clients = new Map<number, WebSocket>()
@@ -77,7 +80,17 @@ async function handlePushJointProgress(
   if (!session || !session.participants.some((p) => p.userId === user.id))
     return send(ws, "error", { message: "Not a participant" })
 
-  await updateParticipantProgress(jointSessionId, user.id, {
+  // An unfriend or a block ends the session in the DB (see blockUser /
+  // removeFriend). updateParticipantProgress would refuse the write anyway;
+  // this turns that into the event the client already knows how to handle
+  // instead of a generic error it would retry.
+  if (session.status !== "active")
+    return send(ws, "joint_session_ended", { jointSessionId })
+
+  // Broadcast what was stored, not what arrived: updateParticipantProgress
+  // sanitises out-of-range indices, so the partner used to see a value the DB
+  // never held.
+  const stored = await updateParticipantProgress(jointSessionId, user.id, {
     exerciseIndex: progress?.exerciseIndex ?? null,
     setIndex: progress?.setIndex ?? null,
     exerciseName: progress?.exerciseName ?? null,
@@ -85,7 +98,7 @@ async function handlePushJointProgress(
     exerciseNames: progress?.exerciseNames ?? null,
   })
 
-  notifyJointProgress(session, user.id, progress ?? {})
+  notifyJointProgress(session, user.id, stored)
 }
 
 async function handleLeaveJointSession(
@@ -133,11 +146,11 @@ export function closeWsServer(): void {
 }
 
 export function createWsServer(httpServer: http.Server): WebSocketServer {
-  // maxPayload, not just the 8KB check in the message handler below: ws
-  // defaults to 100 MB and buffers the entire frame before any handler runs,
-  // so without this an unauthenticated socket could make the box allocate
-  // 100 MB (twice, counting raw.toString()) before the size guard, the 5s auth
-  // timeout or the pre-auth message cap had a chance to fire.
+  // maxPayload: ws defaults to 100 MB and buffers the entire frame before any
+  // handler runs, so without this an unauthenticated socket could make the box
+  // allocate 100 MB (twice, counting raw.toString()) before the 5s auth timeout
+  // or the pre-auth message cap had a chance to fire. Oversized frames are
+  // closed with 1009 here, never reaching the message handler.
   const wss = new WebSocketServer({
     server: httpServer,
     path: "/ws",
@@ -154,8 +167,32 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
       }
       ext._pongReceived = false
       ws.ping()
+      void revalidate(ext)
     })
   }, 30_000)
+
+  /**
+   * A socket is authorized once, at its `auth` frame, and then read for as long
+   * as it stays open. So `ownlift passwd` (which bumps token_version and prints
+   * "all existing sessions were signed out"), a deleted account, and an expired
+   * JWT were all invisible to an already-open connection. Re-checked here, on
+   * the sweep that is already walking every socket.
+   */
+  async function revalidate(ext: ExtendedWebSocket): Promise<void> {
+    if (!ext._userId) return
+    if (ext._exp != null && ext._exp * 1000 <= Date.now())
+      return void ext.close(4001, "Unauthorized: Token expired")
+    try {
+      const found = await findUserForAuth(ext._userId)
+      if (!found || found.tokenVersion !== ext._tokenVersion) {
+        logger.warn(`[WS] revoked session, closing uid=${ext._userId}`)
+        ext.close(4001, "Unauthorized: Token has been revoked")
+      }
+    } catch (err) {
+      // A DB blip must not sign everyone out; the next sweep retries.
+      logger.error("[WS] revalidation failed:", (err as Error).message)
+    }
+  }
 
   wss.on("close", () => clearInterval(heartbeat))
 
@@ -181,12 +218,8 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
     ws.on("message", async (raw: RawData) => {
       const rawStr = raw.toString()
 
-      // Guard: message size. Measure bytes (not JS string length, which
-      // under-counts multi-byte characters).
-      if (Buffer.byteLength(rawStr, "utf8") > 8 * 1024) {
-        send(ws, "error", { message: "Message too large" })
-        return
-      }
+      // No size check here: `maxPayload` above makes ws close the connection
+      // with 1009 before any oversized frame reaches this handler.
 
       let msg: WsMessage
       try {
@@ -209,7 +242,6 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
 
       if (!user && msg.type === "auth") {
         logger.info("[WS] processing auth message")
-        clearTimeout(authTimeout)
 
         try {
           if (!msg.token) {
@@ -243,14 +275,20 @@ export function createWsServer(httpServer: http.Server): WebSocketServer {
 
           user = { id: found.user.id, username: found.user.username }
           extWs._userId = user.id
+          extWs._exp = payload.exp
+          extWs._tokenVersion = payload.tokenVersion
+          // Cleared only now, not on arrival of the auth frame: a findUserForAuth
+          // that hangs (saturated pool) would otherwise leave an unauthenticated
+          // socket open with no timeout left.
+          clearTimeout(authTimeout)
 
           logger.info(`[WS] authenticated via message uid=${user.id}`)
           send(ws, "auth_success", { userId: user.id })
 
-          // Close any existing socket for this user (prevent zombie connections)
-          const existing = clients.get(user.id)
-          if (existing && existing.readyState === WebSocket.OPEN)
-            existing.close(1000, "Replaced by new connection")
+          // Close any existing socket for this user (prevent zombie connections).
+          // Unconditionally: close() is a no-op on an already-closing socket,
+          // and gating on OPEN orphaned a CONNECTING one.
+          clients.get(user.id)?.close(1000, "Replaced by new connection")
 
           clients.set(user.id, ws)
           ws.on("pong", () => {

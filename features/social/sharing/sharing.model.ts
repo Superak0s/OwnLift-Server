@@ -119,6 +119,13 @@ export async function revokePermission(
 /**
  * Permissions this user granted to others ("granted") or that others granted
  * to them ("received") — same query mirrored across the two user columns.
+ *
+ * The friendship join is not belt-and-braces: for a `program` grant this
+ * returns sp.payload, the whole shared program snapshot. removeFriend and
+ * blockUser both delete the grant rows in the same transaction, so there is no
+ * reachable orphan today — but every other grant-backed read re-proves the
+ * friendship at query time and this one is the exception that would leak if
+ * any future path drops a friendship without tearing grants down.
  */
 export async function getPermissions(
   userId: number,
@@ -132,6 +139,7 @@ export async function getPermissions(
   const [rows] = await pool.execute<PermissionRow[]>(
     `SELECT sp.id, sp.${other} AS ${label}UserId, sp.permission_type AS permissionType, sp.payload, sp.created_at AS createdAt, sp.updated_at AS updatedAt, u.username AS ${label}Username
      FROM sharing_permissions sp JOIN users u ON u.id = sp.${other}
+     ${ACCEPTED_FRIENDSHIP_JOIN}
      WHERE sp.${self} = ? ORDER BY sp.permission_type, sp.created_at DESC LIMIT 500`,
     [userId],
   )
@@ -347,17 +355,31 @@ export async function getJointSession(
   }
 }
 
+/**
+ * Returns the values actually written, so the WS fan-out broadcasts what the
+ * DB holds. Broadcasting req.body instead sent partners an exerciseIndex of
+ * -5 or "banana" while the row held 0, and a re-read then disagreed with the
+ * live event.
+ */
 export async function updateParticipantProgress(
   jointSessionId: number,
   userId: number,
   progress: ParticipantProgress,
-): Promise<void> {
+): Promise<{
+  exerciseIndex: number
+  setIndex: number
+  readyForNext: boolean
+  exerciseName: string | null
+  exerciseNames: string[] | null
+}> {
   // ck_jsp_index: both indices are >= 0 integers, and the columns are NOT NULL.
   // Raw JSON from a socket (or a REST body) — non-numeric values become 0
   // instead of a 1264/1366 error.
   const cleanIndex = (v: unknown): number =>
     typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : 0
   const exerciseIndex = cleanIndex(progress.exerciseIndex)
+  const setIndex = cleanIndex(progress.setIndex)
+  const readyForNext = !!progress.readyForNext
   const assignments = [
     "exercise_index = ?",
     "set_index = ?",
@@ -365,8 +387,8 @@ export async function updateParticipantProgress(
   ]
   const params: (string | number)[] = [
     exerciseIndex,
-    cleanIndex(progress.setIndex),
-    progress.readyForNext ? 1 : 0,
+    setIndex,
+    readyForNext ? 1 : 0,
   ]
 
   // A client that knows the whole day's list sends exerciseNames; one that only
@@ -382,13 +404,29 @@ export async function updateParticipantProgress(
     params.push(exerciseIndex, progress.exerciseName)
   }
 
+  // The status join is the single authorization gate both progress paths share
+  // (the WS `push_joint_progress` handler and PATCH .../progress), so a session
+  // ended by an unfriend or a block stops broadcasting on the next push rather
+  // than running until one side happens to send `leave_joint_session`.
   const [result] = await pool.execute<ResultSetHeader>(
-    `UPDATE joint_session_participants SET ${assignments.join(", ")}
-     WHERE joint_session_id = ? AND user_id = ?`,
+    `UPDATE joint_session_participants p
+       JOIN joint_sessions s ON s.id = p.joint_session_id
+     SET ${assignments.map((a) => `p.${a}`).join(", ")}
+     WHERE p.joint_session_id = ? AND p.user_id = ? AND s.status = 'active'`,
     [...params, jointSessionId, userId],
   )
   if (result.affectedRows === 0)
-    throw new NotFoundError("Participant in this joint session")
+    throw new NotFoundError("Active joint session for this participant")
+
+  return {
+    exerciseIndex,
+    setIndex,
+    readyForNext,
+    exerciseName: progress.exerciseNames
+      ? (progress.exerciseNames[exerciseIndex] ?? null)
+      : (progress.exerciseName ?? null),
+    exerciseNames: progress.exerciseNames ?? null,
+  }
 }
 
 export async function endJointSession(

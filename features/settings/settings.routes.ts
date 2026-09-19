@@ -5,6 +5,7 @@ import {
   getUserSettings,
   updateUserSettings,
   SETTING_KEYS,
+  INTEGER_SETTING_KEYS,
   type SettingKey,
 } from "./settings.model.js"
 
@@ -25,11 +26,25 @@ router.get("/", async (req: Request, res: Response) => {
 router.patch("/", async (req: Request, res: Response) => {
   const patch: Partial<Record<SettingKey, number>> = {}
 
+  // A key this server doesn't know was previously dropped in silence, so
+  // `{"hydrationGoalMI": 3000}` (capital i) returned 200 with nothing changed
+  // and the client believed it had saved.
+  const unknown = Object.keys(req.body).filter(
+    (k) => !(SETTING_KEYS as string[]).includes(k),
+  )
+  if (unknown.length > 0)
+    throw new ValidationError(
+      `Unknown setting(s): ${unknown.join(", ")}. Known settings: ${SETTING_KEYS.join(", ")}`,
+    )
+
   for (const key of SETTING_KEYS) {
     const value = req.body[key]
     if (value == null) continue
     if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
       throw new ValidationError(`${key} must be a number >= 0`)
+    // The column is an integer type, so MySQL would round instead of refusing.
+    if (INTEGER_SETTING_KEYS.has(key) && !Number.isInteger(value))
+      throw new ValidationError(`${key} must be a whole number`)
     patch[key] = value
   }
 

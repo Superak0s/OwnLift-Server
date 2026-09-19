@@ -27,9 +27,29 @@ const MUSCLE_NAME_MAX = 128
  * so zero and negatives are as invalid as non-numbers.
  */
 export function parseIntParam(value: string, name: string): number {
-  const n = parseInt(value, 10)
-  if (isNaN(n) || n < 1) throw new ValidationError(`Invalid ${name}`)
+  // Strict, not parseInt: "12abc" used to address workout 12 and "5e9" workout
+  // 5, so a typo'd or truncated id silently hit a real row instead of 400ing.
+  if (!/^\d+$/.test(value.trim()))
+    throw new ValidationError(`Invalid ${name}: ${value}`)
+  const n = Number(value.trim())
+  if (!Number.isSafeInteger(n) || n < 1)
+    throw new ValidationError(`Invalid ${name}: ${value}`)
   return n
+}
+
+/**
+ * A repeated query key (`?split=a&split=b`) arrives as an array, which then
+ * stringifies to "a,b" inside a WHERE clause. Every caller wants one value.
+ */
+export function queryString(
+  req: Request,
+  key: string,
+): string | undefined {
+  const v = req.query[key]
+  if (v === undefined) return undefined
+  if (typeof v !== "string")
+    throw new ValidationError(`${key} must be given at most once`)
+  return v
 }
 
 /**
@@ -41,12 +61,11 @@ export function queryLimit(
   req: Request,
   { def, max, key = "limit" }: { def: number; max: number; key?: string },
 ): number {
+  // queryString, not req.query[key] directly: a repeated `?limit=1&limit=2`
+  // arrives as an array, stringifies to "1,2" and silently became 1.
   // Floor at 1 as well as capping: `?limit=-1` is truthy, so without the
   // Math.max it reached `LIMIT ?` as a negative and every list endpoint 500'd.
-  return Math.min(
-    Math.max(parseInt(req.query[key] as string, 10) || def, 1),
-    max,
-  )
+  return Math.min(Math.max(parseInt(queryString(req, key) ?? "", 10) || def, 1), max)
 }
 
 const validateEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)
@@ -78,7 +97,11 @@ export function parseBackdatedTimestamp(
   if (typeof value !== "string" || !validateISODate(value))
     throw new ValidationError(`${field} must be an ISO-8601 date`)
   if (new Date(value).getTime() > Date.now() + 24 * 60 * 60 * 1000)
-    throw new ValidationError(`${field} cannot be in the future`)
+    throw new ValidationError(
+      `${field} cannot be in the future`,
+      null,
+      "FUTURE_TIMESTAMP",
+    )
   return value
 }
 
@@ -260,6 +283,12 @@ export function validateSessionCreation(
   const { dayNumber, dayTitle, primaryMuscles, secondaryMuscles } = req.body
   const errors: string[] = []
 
+  // startTime is client-supplied and lands straight in workouts.start_time,
+  // which is what the 30-minute stale-session sweep measures against. Unparsed,
+  // a phone with a wrong clock (or a queued offline start replayed late) opened
+  // a workout that the very next 5-minute tick auto-ended.
+  parseBackdatedTimestamp(req.body.startTime ?? null, "startTime")
+
   if (!validateInteger(dayNumber) || dayNumber < 1)
     errors.push("Day number must be a positive integer")
 
@@ -272,6 +301,11 @@ export function validateSessionCreation(
 
   checkMuscleArray(primaryMuscles, "primaryMuscles", errors)
   checkMuscleArray(secondaryMuscles, "secondaryMuscles", errors)
+
+  // Absent means "not a demo"; anything present but non-boolean is a client
+  // bug, not a falsy value to swallow — the route stores `isDemo === true`.
+  if (req.body.isDemo !== undefined && typeof req.body.isDemo !== "boolean")
+    errors.push("isDemo must be a boolean")
 
   if (errors.length > 0)
     throw new ValidationError("Invalid session data", errors)
@@ -318,14 +352,27 @@ export function validateSetTiming(
   checkMuscleArray(secondaryMuscles, "secondaryMuscles", errors)
   if (setIndex !== undefined && (!validateInteger(setIndex) || setIndex < 0))
     errors.push("Set index must be a non-negative integer")
-  if (startTime !== undefined && !validateISODate(startTime))
-    errors.push("Invalid start time format")
-  if (endTime !== undefined && !validateISODate(endTime))
-    errors.push("Invalid end time format")
-  if (weight != null && !validatePositiveNumber(weight))
-    errors.push("Weight must be a positive number")
-  if (reps != null && (!validateInteger(reps) || reps < 1))
-    errors.push("Reps must be a positive integer")
+  // parseBackdatedTimestamp, not a bare date parse: `new Date()` accepts 0,
+  // true and "2999-01-01", and a phone whose clock is years ahead wrote sets
+  // that sorted to the top of every history query forever.
+  for (const [field, value] of [
+    ["startTime", startTime],
+    ["endTime", endTime],
+  ] as const) {
+    if (value === undefined) continue
+    try {
+      parseBackdatedTimestamp(value, field)
+    } catch (err) {
+      errors.push((err as Error).message)
+    }
+  }
+  // ck_ws_weight / ck_ws_reps both allow 0, and the route stores 0 when the
+  // field is omitted — so an explicit 0 (a bodyweight set, a failed set) has
+  // to be accepted too.
+  if (weight != null && (typeof weight !== "number" || isNaN(weight) || weight < 0))
+    errors.push("Weight must be a number >= 0")
+  if (reps != null && (!validateInteger(reps) || reps < 0))
+    errors.push("Reps must be an integer >= 0")
   if (note != null) {
     if (typeof note !== "string") errors.push("Note must be a string")
     else {

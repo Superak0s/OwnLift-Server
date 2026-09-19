@@ -4,6 +4,7 @@ import type { RowDataPacket, ResultSetHeader } from "mysql2"
 import {
   NotFoundError,
   ForbiddenError,
+  ConflictError,
   throwCheckViolation,
 } from "@/middleware/errorHandler.js"
 
@@ -149,7 +150,7 @@ export function parseMuscleGroups(raw: unknown): string[] {
  * under every other user's history. That is the same reason
  * renameExerciseInHistory re-points rows instead of mutating the shared one.
  */
-async function backfillMuscles(
+export async function backfillMuscles(
   row: RowDataPacket,
   primaryMuscles: string[],
   secondaryMuscles: string[],
@@ -286,14 +287,31 @@ export async function recordSetTiming(
     // first for that reason: the workout_sets FK only proves the workout
     // exists, not that the caller owns it. completed_sets always changes, so
     // affectedRows === 0 means no such workout for this user, full stop.
+    //
+    // end_time IS NULL is part of it: without that guard a set posted after
+    // the workout was ended — by a double-tapped end, or by sessionCleanup
+    // closing a workout the user was mid-rest on — landed silently inside a
+    // finished workout, with timestamps after its own endTime.
     const [owned] = await connection.execute<ResultSetHeader>(
       `UPDATE workouts SET completed_sets = completed_sets + 1
-       WHERE id = ? AND user_id = ?`,
+       WHERE id = ? AND user_id = ? AND end_time IS NULL`,
       [sessionId, userId],
     )
     // Thrown, not rolled back here — the catch below owns the rollback.
-    if (owned.affectedRows === 0)
+    if (owned.affectedRows === 0) {
+      // Which of the two it was decides whether the client should reconcile
+      // (409, the workout is closed) or stop retrying (403, not theirs).
+      const [exists] = await connection.execute<RowDataPacket[]>(
+        `SELECT id FROM workouts WHERE id = ? AND user_id = ?`,
+        [sessionId, userId],
+      )
+      if (exists.length)
+        throw new ConflictError(
+          "Session has already ended",
+          "SESSION_ALREADY_ENDED",
+        )
       throw new ForbiddenError("Session not found or unauthorized")
+    }
 
     const [lastSets] = await connection.execute<RowDataPacket[]>(
       // created_at has 1s resolution — id breaks ties so "previous set" is
@@ -301,11 +319,17 @@ export async function recordSetTiming(
       `SELECT end_time FROM workout_sets WHERE workout_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
       [sessionId],
     )
+    // Floored at 0: two devices whose clocks disagree produced a negative
+    // rest, which reads as a set logged before the one it followed.
     const restTime: number | null =
       lastSets.length > 0
-        ? Math.round(
-            (start.getTime() - parseMySQLDate(lastSets[0].end_time).getTime()) /
-              1000,
+        ? Math.max(
+            0,
+            Math.round(
+              (start.getTime() -
+                parseMySQLDate(lastSets[0].end_time).getTime()) /
+                1000,
+            ),
           )
         : null
 
@@ -429,10 +453,70 @@ export async function updateSetTiming(
   const [updated] = await pool.execute<WorkoutSetRow[]>(
     `SELECT ${SET_COLS}
      FROM workout_sets ws JOIN exercises e ON ws.exercise_id = e.id
-     WHERE ws.id = ?`,
-    [setId],
+     JOIN workouts w ON ws.workout_id = w.id
+     WHERE ws.id = ? AND w.user_id = ?`,
+    [setId, userId],
   )
   return updated[0] as unknown as SetTiming
+}
+
+/**
+ * Delete one recorded set, addressed the way the client knows it: by exercise
+ * name and set index rather than by row id, because the app undoes a set it
+ * has only ever identified by its position in the day.
+ *
+ * A set the client already removed locally is not an error — deleting nothing
+ * returns deletedCount 0 so a retry after a failed sync is idempotent. Only a
+ * missing or foreign workout is a 404.
+ */
+export async function deleteSetByIndex(
+  sessionId: number,
+  userId: number,
+  exerciseName: string,
+  setIndex: number,
+): Promise<number> {
+  const [owned] = await pool.execute<RowDataPacket[]>(
+    `SELECT id FROM workouts WHERE id = ? AND user_id = ?`,
+    [sessionId, userId],
+  )
+  if (!owned.length) throw new NotFoundError("Session")
+
+  const connection: PoolConnection = await pool.getConnection()
+  try {
+    await connection.beginTransaction()
+
+    // Same (exercise, index) can legitimately appear twice — a set re-logged
+    // after a failed sync. The most recent row is the one the user just saw.
+    const [matches] = await connection.execute<RowDataPacket[]>(
+      `SELECT ws.id FROM workout_sets ws JOIN exercises e ON ws.exercise_id = e.id
+       WHERE ws.workout_id = ? AND e.name = ? AND ws.set_index = ?
+       ORDER BY ws.id DESC LIMIT 1`,
+      [sessionId, exerciseName, setIndex],
+    )
+    if (!matches.length) {
+      await connection.commit()
+      return 0
+    }
+
+    await connection.execute(`DELETE FROM workout_sets WHERE id = ?`, [
+      matches[0].id,
+    ])
+    // completed_sets is the stored count getSessionHistory reports instead of
+    // counting rows, so it has to come down with the row. GREATEST floors it
+    // at 0 rather than trusting a counter that predates this delete path.
+    await connection.execute(
+      `UPDATE workouts SET completed_sets = GREATEST(completed_sets - 1, 0) WHERE id = ?`,
+      [sessionId],
+    )
+
+    await connection.commit()
+    return 1
+  } catch (err) {
+    await connection.rollback()
+    throw err
+  } finally {
+    connection.release()
+  }
 }
 
 /**
@@ -467,19 +551,37 @@ export async function renameExerciseInHistory(
   return result.affectedRows
 }
 
+/**
+ * Close a workout. Idempotent: the `end_time IS NULL` guard makes a retried or
+ * double-tapped end a no-op that returns the row as it already stands, rather
+ * than rewriting end_time — an end call replayed after a week offline used to
+ * turn a 45-minute workout into a 7-day one. `alreadyEnded` tells the client
+ * which of the two happened, so it can reconcile instead of retrying.
+ */
 export async function endSession(
   sessionId: number,
   userId: number,
   endTime: string | Date | null = null,
-): Promise<Session> {
+): Promise<{ session: Session; alreadyEnded: boolean }> {
   const ts = formatDateForMySQL(endTime ?? new Date())
   // Scoped by user_id like every other statement in this file, rather than
   // trusting the route to have checked first.
-  await pool.execute(
-    `UPDATE workouts SET end_time = ?, total_duration = TIMESTAMPDIFF(SECOND, start_time, ?)
-     WHERE id = ? AND user_id = ?`,
-    [ts, ts, sessionId, userId],
-  )
+  let updated: ResultSetHeader
+  try {
+    const [res] = await pool.execute<ResultSetHeader>(
+      `UPDATE workouts SET end_time = ?, total_duration = TIMESTAMPDIFF(SECOND, start_time, ?)
+       WHERE id = ? AND user_id = ? AND end_time IS NULL`,
+      [ts, ts, sessionId, userId],
+    )
+    updated = res
+  } catch (err) {
+    // ck_w_times: an end before the workout's start is a bad request, not a
+    // 500 — the two set paths already treat it that way.
+    throw throwCheckViolation(
+      err,
+      "Session end time cannot be before its start time",
+    )
+  }
   const [rows] = await pool.execute<WorkoutRow[]>(
     `SELECT ${WORKOUT_COLS} ${WORKOUT_FROM} WHERE w.id = ? AND w.user_id = ?`,
     [sessionId, userId],
@@ -489,10 +591,13 @@ export async function endSession(
   // one, so ownership is decided by the read, not by affectedRows.
   if (!row) throw new ForbiddenError("Session not found or unauthorized")
   return {
-    ...row,
-    primaryMuscles: parseMuscleGroups(row.primaryMuscles),
-    secondaryMuscles: parseMuscleGroups(row.secondaryMuscles),
-  } as unknown as Session
+    session: {
+      ...row,
+      primaryMuscles: parseMuscleGroups(row.primaryMuscles),
+      secondaryMuscles: parseMuscleGroups(row.secondaryMuscles),
+    } as unknown as Session,
+    alreadyEnded: updated.affectedRows === 0,
+  }
 }
 
 export async function getSessionDetails(
@@ -534,9 +639,9 @@ export async function getSessionHistory(
 ): Promise<Session[]> {
   // setCount was a correlated (SELECT COUNT(*) FROM workout_sets ...) — one
   // index scan per returned row, up to 365 of them on a single request.
-  // workouts.completed_sets is incremented inside the same transaction that
-  // inserts the set (recordSetTiming) and nothing ever deletes a set, so the
-  // column already holds exactly this number.
+  // workouts.completed_sets is maintained inside the same transaction as the
+  // set itself — incremented by recordSetTiming, decremented by
+  // deleteSetByIndex — so the column already holds exactly this number.
   let q = `SELECT ${WORKOUT_COLS}, u.name AS userName, u.username,
       w.completed_sets AS setCount
      ${WORKOUT_FROM} JOIN users u ON w.user_id = u.id
@@ -637,12 +742,35 @@ export async function updateSessionSplit(
  *
  * Workouts are ended AT their last activity, not at "now", so total_duration
  * reflects when the user actually stopped rather than whenever the cleanup job
- * happened to run. Returns how many were ended.
+ * happened to run.
+ *
+ * Returns the (id, userId) pairs it ended, so the caller can tell the owner's
+ * device: without an event the app's first sign is a 404 on the next set, which
+ * silently drops the set the user just did.
  */
 export async function endStaleSessions(
   thresholdMinutes: number,
-): Promise<number> {
-  const [result] = await pool.execute<ResultSetHeader>(
+): Promise<{ id: number; userId: number }[]> {
+  // Read the candidates first so the caller has ids to notify; the UPDATE below
+  // still carries the same predicate and is what actually decides. A workout
+  // the owner closed in the moment between the two is skipped by the UPDATE but
+  // still listed here — an extra event for a session the client already ended,
+  // which it ignores. Not worth a second round-trip to avoid.
+  const [stale] = await pool.execute<RowDataPacket[]>(
+    `SELECT w.id, w.user_id AS userId FROM workouts w
+     WHERE w.end_time IS NULL
+       AND GREATEST(
+             w.start_time,
+             COALESCE(
+               (SELECT MAX(ws.end_time) FROM workout_sets ws WHERE ws.workout_id = w.id),
+               w.start_time
+             )
+           ) < (NOW() - INTERVAL ? MINUTE)`,
+    [thresholdMinutes],
+  )
+  if (stale.length === 0) return []
+
+  await pool.execute<ResultSetHeader>(
     // Correlated, not a derived table: grouping all of workout_sets by
     // workout_id materialised the entire table every run, forever, to find the
     // handful of rows where end_time IS NULL. This way the lookup runs only
@@ -652,18 +780,29 @@ export async function endStaleSessions(
     // evaluates UPDATE assignments left to right and later ones see the new
     // values. That is MySQL-specific, and the reason the subquery isn't
     // repeated a third time here.
+    // GREATEST(w.start_time, ...): nothing stops a client sending a set whose
+    // end_time predates its workout's start_time (a tablet with a slow clock,
+    // or a queued offline set replayed later). One such row made this single
+    // statement violate ck_w_times, which meant *no* workout on the instance
+    // was ever auto-ended again — the job failed on every 5-minute tick.
     `UPDATE workouts w
-     SET w.end_time = COALESCE(
-           (SELECT MAX(ws.end_time) FROM workout_sets ws WHERE ws.workout_id = w.id),
-           w.start_time
+     SET w.end_time = GREATEST(
+           w.start_time,
+           COALESCE(
+             (SELECT MAX(ws.end_time) FROM workout_sets ws WHERE ws.workout_id = w.id),
+             w.start_time
+           )
          ),
          w.total_duration = TIMESTAMPDIFF(SECOND, w.start_time, w.end_time)
      WHERE w.end_time IS NULL
-       AND COALESCE(
-             (SELECT MAX(ws.end_time) FROM workout_sets ws WHERE ws.workout_id = w.id),
-             w.start_time
+       AND GREATEST(
+             w.start_time,
+             COALESCE(
+               (SELECT MAX(ws.end_time) FROM workout_sets ws WHERE ws.workout_id = w.id),
+               w.start_time
+             )
            ) < (NOW() - INTERVAL ? MINUTE)`,
     [thresholdMinutes],
   )
-  return result.affectedRows
+  return stale.map((r) => ({ id: r.id as number, userId: r.userId as number }))
 }

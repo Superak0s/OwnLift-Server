@@ -23,6 +23,7 @@ import {
   createMetricDefinition,
   getMetricDefinitions,
   requireKnownMetric,
+  requireKnownMetrics,
 } from "./measurements.model.js"
 
 const router: Router = Router()
@@ -43,7 +44,7 @@ async function parseMetrics(
     if (required) throw new ValidationError("metrics query parameter is required")
     return []
   }
-  for (const k of keys) await requireKnownMetric(userId, k)
+  await requireKnownMetrics(userId, keys)
   return keys
 }
 
@@ -86,7 +87,7 @@ router.post("/", async (req: Request, res: Response) => {
   )
   if (samples.length === 0)
     throw new ValidationError("At least one measurement is required")
-  for (const s of samples) await requireKnownMetric(userId, s.metric)
+  await requireKnownMetrics(userId, samples.map((s) => s.metric))
 
   const id = await logMetrics(
     userId,
@@ -94,7 +95,7 @@ router.post("/", async (req: Request, res: Response) => {
     parseBackdatedTimestamp(measuredAt, "measuredAt"),
     note || null,
   )
-  res.status(201).json({ success: true, id })
+  res.status(201).json({ success: true, data: { id }, id })
 })
 
 /**

@@ -73,14 +73,14 @@ router.post("/follow-ups", async (req: Request, res: Response) => {
     throw new ValidationError("updates must be an array")
   // The ids go straight into a bind list, so they get parsed here rather than
   // reaching mysql2 as undefined.
-  const entries = await batchFollowUp(
+  const { entries, skipped } = await batchFollowUp(
     req.user!.id,
     updates.map((u) => ({
       ...u,
       sorenessId: parseIntParam(String(u?.sorenessId), "soreness entry ID"),
     })),
   )
-  res.json({ success: true, data: entries })
+  res.json({ success: true, data: entries, skipped })
 })
 
 /** Check in on one episode. The episode's own status follows the report. */

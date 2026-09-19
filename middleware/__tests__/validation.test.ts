@@ -187,13 +187,23 @@ describe("validateSetTiming", () => {
     expect(run(validateSetTiming, good).nextCalled).toBe(true)
     expect(run(validateSetTiming, {}).nextCalled).toBe(true)
   })
+  it("accepts a bodyweight or failed set", () => {
+    // ck_ws_weight / ck_ws_reps both allow 0, and omitting the field stores 0 —
+    // so sending 0 explicitly must not be a 400.
+    expect(run(validateSetTiming, { weight: 0, reps: 0 }).err).toBeNull()
+  })
+
   it("rejects malformed fields", () => {
     expect(run(validateSetTiming, { exerciseName: "  " }).err!.message).toContain("Exercise name")
     expect(run(validateSetTiming, { setIndex: -1 }).err!.message).toContain("Set index")
-    expect(run(validateSetTiming, { startTime: "nope" }).err!.message).toContain("start time")
-    expect(run(validateSetTiming, { endTime: "nope" }).err!.message).toContain("end time")
+    expect(run(validateSetTiming, { startTime: "nope" }).err!.message).toContain("startTime")
+    expect(run(validateSetTiming, { endTime: "nope" }).err!.message).toContain("endTime")
     expect(run(validateSetTiming, { weight: -5 }).err!.message).toContain("Weight")
-    expect(run(validateSetTiming, { reps: 0 }).err!.message).toContain("Reps")
+    expect(run(validateSetTiming, { reps: -1 }).err!.message).toContain("Reps")
+    // A far-future stamp is malformed too — a phone with a wrong clock used to
+    // write sets that sorted above every real one forever.
+    expect(run(validateSetTiming, { startTime: "2999-01-01T00:00:00Z" }).err!.message)
+      .toContain("startTime")
     expect(run(validateSetTiming, { note: 42 }).err!.message).toContain("Note")
     expect(run(validateSetTiming, { isWarmup: "yes" }).err!.message).toContain("isWarmup")
     expect(run(validateSetTiming, { machineName: 5 }).err!.message).toContain("machineName")

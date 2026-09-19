@@ -16,6 +16,13 @@ const ALLOWED_MIME_TYPES = [
   "image/webp",
 ] as const
 const MAX_PHOTO_SIZE = 10 * 1024 * 1024
+
+// The only unbounded-growth path on the box: photo bytes live in a LONGBLOB, so
+// when they fill the MySQL data directory *every* write on the instance starts
+// failing, not just uploads. One friend uploading an 8 MB photo a day is ~3
+// GB/year. Per user rather than per instance so one uploader can't starve the
+// others. 0 disables the cap.
+const PHOTO_QUOTA_MB = Number(process.env.PHOTO_QUOTA_MB ?? 1024)
 const ALLOWED_ANGLES = ["front", "back", "side", "custom"] as const
 const MAX_MUSCLE_NAME_LENGTH = 128
 
@@ -76,6 +83,20 @@ export async function uploadPhoto(
   // comma in the name is just a character.
   if (muscleGroups.some((m) => typeof m !== "string" || !m || m.length > MAX_MUSCLE_NAME_LENGTH))
     throw new ValidationError("Invalid muscle group")
+
+  if (PHOTO_QUOTA_MB > 0) {
+    const [[used]] = await pool.execute<RowDataPacket[]>(
+      `SELECT COALESCE(SUM(file_size), 0) AS bytes FROM progress_photos WHERE user_id = ?`,
+      [userId],
+    )
+    const quotaBytes = PHOTO_QUOTA_MB * 1024 * 1024
+    if (Number(used!.bytes) + photoBuffer.length > quotaBytes)
+      throw new ValidationError(
+        `Photo storage quota reached (${PHOTO_QUOTA_MB} MB). Delete older photos to upload more.`,
+        null,
+        "PHOTO_QUOTA_EXCEEDED",
+      )
+  }
 
   const connection = await pool.getConnection()
   try {

@@ -58,20 +58,6 @@ export async function getNotesByMuscle(
   return rows
 }
 
-/** The table has an updated_at; before this there was nothing to update it. */
-export async function updateNote(
-  userId: number,
-  noteId: number,
-  content: string,
-): Promise<MuscleNote> {
-  const [result] = await pool.execute<ResultSetHeader>(
-    `UPDATE muscle_notes SET content = ? WHERE id = ? AND user_id = ?`,
-    [requireContent(content), noteId, userId],
-  )
-  if (result.affectedRows === 0) throw new NotFoundError("Note")
-  return getNoteById(userId, noteId)
-}
-
 export async function deleteNote(
   userId: number,
   noteId: number,

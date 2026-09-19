@@ -16,12 +16,21 @@ import { areFriends } from "../features/social/friends/friends.model.js"
  * particular DELETE /api/auth/account/data stays scoped to the caller, so a
  * trainer cannot wipe a trainee's account.
  *
- * The grant is read/write but never destructive: `denyTrainer` guards every
- * route in the covered routers that erases or overwrites in bulk — the delete
- * routes, POST /api/program/upload (an upsert that replaces the whole program
- * rather than merging into it) and POST /api/sessions/rename-exercise (a bulk
- * rewrite of a split's entire set history) — so destroying a trainee's data
- * stays the trainee's own call.
+ * The grant is read/write but never destructive. `denyTrainer` guards every
+ * route in the covered routers that erases or overwrites existing data:
+ *   - the delete routes, including DELETE /api/sessions/:id/sets (one at a
+ *     time is still the trainee's recorded history being deleted)
+ *   - POST /api/program/upload (an upsert that replaces the whole program
+ *     rather than merging into it)
+ *   - POST /api/sessions/rename-exercise (a bulk rewrite of a split's entire
+ *     set history) and PATCH /api/program/exercise/rename (re-points the slot
+ *     at another shared `exercises` row, changing how the trainee's history
+ *     reads)
+ * What a trainer CAN write is additive: recording and editing sets, starting
+ * and ending workouts, PATCH /exercise/add, /exercise/sets and
+ * /exercise/machine, and PUT /api/program/current-day — moving the trainee's
+ * day pointer is part of running their session, and it overwrites a pointer
+ * rather than data. Destroying a trainee's data stays the trainee's own call.
  */
 export function denyTrainer(
   req: Request,

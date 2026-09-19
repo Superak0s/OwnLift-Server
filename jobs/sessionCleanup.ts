@@ -10,6 +10,7 @@
 // quiet for too long.
 
 import { endStaleSessions } from "../features/workouts/workouts.model.js"
+import { sendToUser } from "../ws/wsServer.js"
 import { logger } from "../utils/logger.js"
 
 // Keep this in sync with INACTIVITY_THRESHOLD_MS on the client
@@ -23,8 +24,9 @@ const CHECK_INTERVAL_MS = 5 * 60 * 1000
 
 let cleanupTimer: ReturnType<typeof setInterval> | null = null
 
-// One idempotent statement, so an overlapping run is harmless — the second
-// one simply matches no rows.
+// The write is one idempotent statement, so an overlapping run is harmless —
+// the second one simply matches no rows. There is no in-flight flag; runs are
+// five minutes apart and nothing here needs one.
 //
 // Exported so the test can drive a sweep directly. The scheduler runs this
 // once on start and then only every 5 minutes, and against a DB with
@@ -35,7 +37,14 @@ let cleanupTimer: ReturnType<typeof setInterval> | null = null
 export async function runStaleSessionCleanup(): Promise<void> {
   try {
     const ended = await endStaleSessions(INACTIVITY_THRESHOLD_MINUTES)
-    if (ended > 0) logger.info(`[SESSION_CLEANUP] Auto-ended ${ended} session(s)`)
+    if (ended.length === 0) return
+    logger.info(`[SESSION_CLEANUP] Auto-ended ${ended.length} session(s)`)
+    // Tell the owner's device. Without this the app's first sign that the
+    // workout is gone is a 404 on the next set it posts — and that set is lost,
+    // because recordSetTiming's ownership guard includes end_time IS NULL.
+    // A user with no open socket simply misses it and re-syncs on next launch.
+    for (const { id, userId } of ended)
+      sendToUser(userId, "session_auto_ended", { sessionId: id })
   } catch (err) {
     logger.error(
       "[SESSION_CLEANUP] Cleanup run failed:",

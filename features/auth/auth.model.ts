@@ -37,23 +37,31 @@ export async function createUser(
 ): Promise<number> {
   const passwordHash = await bcrypt.hash(password, 12)
 
-  const [countRows] = await pool.execute<RowDataPacket[]>(
-    `SELECT COUNT(*) AS cnt FROM users`,
-  )
-  const existing = (countRows as any)[0]?.cnt ?? 0
-  const isAdmin = existing === 0 ? 1 : 0
-
   // uq_users_username / uq_users_email do the uniqueness check, so there is no
   // pre-check SELECT to lose the race against two simultaneous signups.
+  let insertId: number
   try {
     const [result] = await pool.execute<ResultSetHeader>(
       `INSERT INTO users (username, email, password_hash, name, is_admin, created_at) VALUES (?, ?, ?, ?, ?, NOW())`,
-      [username, email, passwordHash, name || username, isAdmin],
+      [username, email, passwordHash, name || username, 0],
     )
-    return result.insertId
+    insertId = result.insertId
   } catch (err) {
     throw asDuplicateUserError(err)
   }
+
+  // The first-ever user becomes admin. Decided AFTER the insert and against
+  // MIN(id) rather than from a COUNT(*) taken before it: two signups racing on
+  // a fresh box both read a count of 0 and both came out admin. Exactly one row
+  // can hold the lowest id, so this is the same rule without the race. The
+  // derived table is required — MySQL/MariaDB refuse a bare subquery on the
+  // table being updated.
+  await pool.execute(
+    `UPDATE users SET is_admin = 1
+     WHERE id = ? AND id = (SELECT m FROM (SELECT MIN(id) AS m FROM users) AS first)`,
+    [insertId],
+  )
+  return insertId
 }
 
 /**
@@ -150,7 +158,7 @@ export function getDummyPasswordHash(): string {
 
 export function generateToken(userId: number, tokenVersion: number): string {
   return jwt.sign({ userId, tokenVersion }, process.env.JWT_SECRET!, {
-    expiresIn: (process.env.JWT_EXPIRES_IN || "7d") as SignOptions["expiresIn"],
+    expiresIn: (process.env.JWT_EXPIRES_IN || "15m") as SignOptions["expiresIn"],
     algorithm: "HS256",
   })
 }
@@ -320,6 +328,19 @@ export async function setUserAdmin(userId: number, isAdmin: boolean): Promise<bo
     [isAdmin ? 1 : 0, userId],
   )
   return result.affectedRows > 0
+}
+
+/**
+ * Every account, admins first. `ownlift add`/`remove` need the exact spelling of
+ * a username, and listing only admins meant opening MySQL to find out what a
+ * non-admin's is.
+ */
+export async function listUsers(): Promise<AuthUser[]> {
+  const [rows] = await pool.execute<AuthUserRow[]>(
+    `SELECT id, username, email, name, is_admin, created_at FROM users
+     ORDER BY is_admin DESC, id ASC`,
+  )
+  return rows.map(toAuthUser)
 }
 
 export async function listAdmins(): Promise<AuthUser[]> {

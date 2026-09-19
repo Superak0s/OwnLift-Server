@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__adguard-home__rewrites_list",
+      "mcp__adguard-home__dhcp_get_status",
+      "mcp__adguard-home__access_get_list",
+      "mcp__adguard-home__tls_get_status"
+    ]
+  }
+}

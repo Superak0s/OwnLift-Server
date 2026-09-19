@@ -4,9 +4,13 @@ import { findUserForAuth } from "../features/auth/auth.model.js"
 import { UnauthorizedError } from "./errorHandler.js"
 import type { JwtPayload } from "../features/auth/auth.types.js"
 
+// Bearer only. `header.split(" ")[1]` also accepted `Basic <jwt>` and
+// `Anything <jwt>`; every one of those failed safely at jwt.verify, but the
+// scheme is part of the contract and a caller sending the wrong one deserves
+// the 401 to say so rather than "invalid token".
 function extractToken(req: Request): string | null {
-  const header = req.headers["authorization"]
-  return header ? (header.split(" ")[1] ?? null) : null
+  const match = /^Bearer +(\S+)$/.exec(req.headers["authorization"] ?? "")
+  return match?.[1] ?? null
 }
 
 export async function authenticateToken(
@@ -14,6 +18,11 @@ export async function authenticateToken(
   _res: Response,
   next: NextFunction,
 ): Promise<void> {
+  // Mounted twice on the 2 MB-parser paths (once by server.ts to gate the
+  // parser, once by the router), which meant two findUserForAuth queries per
+  // program upload on an 8-connection pool.
+  if (req.user) return next()
+
   const token = extractToken(req)
   if (!token) return next(new UnauthorizedError("Access token required"))
 

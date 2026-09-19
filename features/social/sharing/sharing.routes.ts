@@ -47,6 +47,71 @@ const friendAccess = (
     hasPermission(friendId, viewerId, permission),
   ])
 
+/**
+ * Who is currently watching whose live session.
+ *
+ * There is no "stop watching" call — the app just stops polling the live
+ * route — so a watch is held open by polling and expires on silence. In-process
+ * state, like the WS rate counters: this server is single-instance, and a
+ * restart only costs a watcher one `watch_started` on their next poll.
+ */
+const WATCH_IDLE_MS = 60_000
+
+interface Watch {
+  watcherId: number
+  watcherUsername: string
+  friendId: number
+  sessionId: number
+  since: Date
+  timer: NodeJS.Timeout
+}
+
+const activeWatches = new Map<string, Watch>()
+
+function noteWatch(
+  watcherId: number,
+  watcherUsername: string,
+  friendId: number,
+  sessionId: number,
+): void {
+  const key = `${watcherId}:${sessionId}`
+  const existing = activeWatches.get(key)
+
+  // unref: a pending expiry must never be the reason the process (or a test
+  // run) stays alive.
+  const timer = setTimeout(() => {
+    activeWatches.delete(key)
+    sendToUser(friendId, "watch_stopped", {
+      watcherId,
+      watcherUsername,
+      sessionId,
+    })
+  }, WATCH_IDLE_MS)
+  timer.unref()
+
+  if (existing) {
+    // Every poll refreshes the deadline, but only the first one announces the
+    // watcher — otherwise the owner gets a notification every few seconds.
+    clearTimeout(existing.timer)
+    activeWatches.set(key, { ...existing, timer })
+    return
+  }
+
+  activeWatches.set(key, {
+    watcherId,
+    watcherUsername,
+    friendId,
+    sessionId,
+    since: new Date(),
+    timer,
+  })
+  sendToUser(friendId, "watch_started", {
+    watcherId,
+    watcherUsername,
+    sessionId,
+  })
+}
+
 router.use(authenticateToken)
 
 router.post("/permissions", async (req: Request, res: Response) => {
@@ -81,12 +146,12 @@ router.post("/permissions", async (req: Request, res: Response) => {
 
 router.get("/permissions/granted", async (req: Request, res: Response) => {
   const permissions = await getPermissions(req.user!.id, "granted")
-  res.json({ success: true, permissions, count: permissions.length })
+  res.json({ success: true, permissions })
 })
 
 router.get("/permissions/received", async (req: Request, res: Response) => {
   const permissions = await getPermissions(req.user!.id, "received")
-  res.json({ success: true, permissions, count: permissions.length })
+  res.json({ success: true, permissions })
 })
 
 router.delete("/permissions/:permissionId", async (req: Request, res: Response) => {
@@ -105,7 +170,7 @@ router.get("/sessions/friend/:friendId", async (req: Request, res: Response) => 
     throw new ForbiddenError("Friend hasn't granted you history access")
 
   const sessions = await getFriendSessions(friendId, limit)
-  res.json({ success: true, sessions, count: sessions.length })
+  res.json({ success: true, sessions })
 })
 
 router.get("/sessions/friend/:friendId/:sessionId", async (req: Request, res: Response) => {
@@ -229,7 +294,9 @@ router.patch("/joint-sessions/:jointSessionId/progress", async (req: Request, re
     "jointSessionId",
   )
 
-  await updateParticipantProgress(jointSessionId, req.user!.id, {
+  // Broadcast the stored values, not the raw body: updateParticipantProgress
+  // sanitises out-of-range indices, so the two disagreed.
+  const stored = await updateParticipantProgress(jointSessionId, req.user!.id, {
     exerciseIndex: exerciseIndex ?? null,
     setIndex: setIndex ?? null,
     exerciseName: exerciseName ?? null,
@@ -238,15 +305,7 @@ router.patch("/joint-sessions/:jointSessionId/progress", async (req: Request, re
   })
 
   const session = await getJointSession(jointSessionId)
-  if (session) {
-    notifyJointProgress(session, req.user!.id, {
-      exerciseIndex,
-      setIndex,
-      exerciseName,
-      readyForNext,
-      exerciseNames,
-    })
-  }
+  if (session) notifyJointProgress(session, req.user!.id, stored)
 
   res.json({ success: true })
 })
@@ -310,6 +369,10 @@ router.get("/watch/friend/:friendId/session/:sessionId/live", async (req: Reques
 
   const session = await getFriendSessionDetails(friendId, sessionId)
   if (!session) throw new NotFoundError("Session")
+
+  // Only after every access check: a caller who can't watch never registers as
+  // a watcher, and the owner is never told about them.
+  noteWatch(req.user!.id, req.user!.username, friendId, sessionId)
 
   res.json({ success: true, liveSession: session })
 })
